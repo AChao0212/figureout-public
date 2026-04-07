@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+
+User-agent: Googlebot
+Crawl-delay: 2
+
+User-agent: Bingbot
+Crawl-delay: 5
+
+Sitemap: https://figureout.tw/sitemap.xml

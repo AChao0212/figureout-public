@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Docker
+pgdata/
+
+# Env
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+enrich.log
+
+# Backup files
+*.bak
+*.sql
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Celery
+celerybeat-schedule*
+api/figuerin_dev.db
+figures_export.json
+
+# Data files (do NOT upload to public repo)
+tools/*.json
+tools/*.sql
+*.sql
+
+# Claude config
+CLAUDE.md
+.claude/

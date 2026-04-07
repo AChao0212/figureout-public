@@ -1,0 +1,76 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: figureout
+      POSTGRES_USER: figureout
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-figureout_dev}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U figureout"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8084:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://figureout:${POSTGRES_PASSWORD:-figureout_dev}@db:5432/figureout
+      DATABASE_URL_SYNC: postgresql://figureout:${POSTGRES_PASSWORD:-figureout_dev}@db:5432/figureout
+      REDIS_URL: redis://redis:6379/0
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  scraper:
+    build: ./scraper
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://figureout:${POSTGRES_PASSWORD:-figureout_dev}@db:5432/figureout
+      REDIS_URL: redis://redis:6379/0
+      LLM_API_URL: http://192.168.50.1:11434/v1
+      LLM_MODEL: gpt-oss:20b
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: https://figureout.tw/api
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8083:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: https://figureout.tw/api
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+    external: true
+    name: figureout_pgdata

@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+asyncpg
+psycopg2-binary
+alembic
+pydantic
+python-dotenv
+pyjwt
+google-auth
+requests
+redis[hiredis]
+httpx
+bcrypt

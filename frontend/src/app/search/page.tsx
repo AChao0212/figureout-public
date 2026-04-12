@@ -1,6 +1,19 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import SearchBar from "@/components/SearchBar";
 import SearchResultsGrid from "@/components/SearchResultsGrid";
+
+export const metadata: Metadata = {
+  title: "搜尋公仔",
+  description: "搜尋 37,000+ 公仔二手市場價格",
+  // All search URL variants share the same canonical (the base /search page)
+  // This prevents Google "duplicate without canonical" warnings
+  alternates: {
+    canonical: "https://figureout.tw/search",
+  },
+  // Search result pages with filters shouldn't be indexed — infinite variations
+  robots: { index: false, follow: true },
+};
 
 interface Figure {
   id: number;

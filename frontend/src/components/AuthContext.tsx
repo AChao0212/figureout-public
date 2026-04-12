@@ -26,16 +26,28 @@ type AuthContextValue = {
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string, displayName?: string) => Promise<void>;
   logout: () => void;
+  refreshUser: () => Promise<void>;
   loading: boolean;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+class AuthError extends Error {
+  constructor(public status: number) {
+    super(`Auth failed: ${status}`);
+  }
+}
+
 async function fetchProfile(token: string): Promise<User> {
   const res = await fetch(`${API_URL}/user/me`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error("Failed to fetch profile");
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new AuthError(res.status);
+    }
+    throw new Error(`Failed to fetch profile: ${res.status}`);
+  }
   return res.json();
 }
 
@@ -51,13 +63,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     setToken(stored);
-    fetchProfile(stored)
-      .then(setUser)
-      .catch(() => {
+
+    // Try to fetch profile with retry. Only clear token if ALL retries
+    // return auth errors (401/403) — that means the token is truly invalid.
+    // Network errors / 5xx errors keep the token for next retry.
+    const tryFetch = async (): Promise<void> => {
+      let allAuthErrors = true;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const profile = await fetchProfile(stored);
+          setUser(profile);
+          return;
+        } catch (err) {
+          if (!(err instanceof AuthError)) {
+            allAuthErrors = false;
+          }
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt)));
+          }
+        }
+      }
+      // All 3 attempts failed
+      if (allAuthErrors) {
+        // Token is truly invalid (consistently 401/403)
         localStorage.removeItem(TOKEN_KEY);
         setToken(null);
-      })
-      .finally(() => setLoading(false));
+      }
+      // else: transient errors, keep token for recovery
+    };
+
+    tryFetch().finally(() => setLoading(false));
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
@@ -73,9 +108,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const data = await res.json();
     localStorage.setItem(TOKEN_KEY, data.token);
     setToken(data.token);
-    // Fetch full profile (with report_count)
-    const profile = await fetchProfile(data.token);
-    setUser(profile);
+    // Fetch full profile (with report_count). Don't throw if this fails —
+    // login already succeeded, profile can be fetched later.
+    try {
+      const profile = await fetchProfile(data.token);
+      setUser(profile);
+    } catch {
+      // Login succeeded but profile fetch failed — leave user null,
+      // next page load or refreshUser() call will retry.
+    }
   }, []);
 
   const register = useCallback(async (username: string, password: string, displayName?: string) => {
@@ -91,8 +132,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const data = await res.json();
     localStorage.setItem(TOKEN_KEY, data.token);
     setToken(data.token);
-    const profile = await fetchProfile(data.token);
-    setUser(profile);
+    try {
+      const profile = await fetchProfile(data.token);
+      setUser(profile);
+    } catch {
+      // Same — register succeeded, profile fetch will retry
+    }
   }, []);
 
   const logout = useCallback(() => {
@@ -101,8 +146,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const refreshUser = useCallback(async () => {
+    if (!token) return;
+    try {
+      const profile = await fetchProfile(token);
+      setUser(profile);
+    } catch {
+      // Silently fail — keep existing user state
+    }
+  }, [token]);
+
   return (
-    <AuthContext value={{ user, token, login, register, logout, loading }}>
+    <AuthContext value={{ user, token, login, register, logout, refreshUser, loading }}>
       {children}
     </AuthContext>
   );

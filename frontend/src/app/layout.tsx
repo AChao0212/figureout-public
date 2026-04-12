@@ -6,6 +6,7 @@ import CurrencySelector from "@/components/CurrencySelector";
 import ColorModeToggle from "@/components/ColorModeToggle";
 import { ColorModeProvider } from "@/components/ColorModeContext";
 import { WatchlistProvider } from "@/components/WatchlistContext";
+import { PurchaseProvider } from "@/components/PurchaseContext";
 import { ExchangeRateProvider } from "@/components/ExchangeRateContext";
 import { AuthProvider } from "@/components/AuthContext";
 import UserMenu from "@/components/UserMenu";
@@ -59,7 +60,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col overflow-x-hidden bg-[#0d1117] text-[#e6edf3]">
         <ColorModeProvider>
         <AuthProvider>
-        <ExchangeRateProvider><WatchlistProvider>
+        <ExchangeRateProvider><WatchlistProvider><PurchaseProvider>
         <header className="sticky top-0 z-50 border-b border-[#30363d] bg-[#0d1117]/95 backdrop-blur-sm">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="flex h-14 items-center justify-between">
@@ -94,7 +95,7 @@ export default function RootLayout({
             FigureOut — PVC 公仔二級市場行情平台
           </div>
         </footer>
-        </WatchlistProvider></ExchangeRateProvider>
+        </PurchaseProvider></WatchlistProvider></ExchangeRateProvider>
         </AuthProvider>
         </ColorModeProvider>
       </body>

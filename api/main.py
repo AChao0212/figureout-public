@@ -17,22 +17,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         now = time()
 
-        # Skip rate limiting for static files and health checks
-        if path.startswith("/_next") or path == "/api/health":
+        # Skip rate limiting for auth, static files, and health checks
+        # Auth endpoints are protected by their own rate limits (login attempts)
+        if (path.startswith("/_next") or path == "/api/health" or
+            "/user/me" in path or "/user/login" in path or "/user/register" in path):
             return await call_next(request)
 
-        # Per-IP: max 120 requests per minute globally
+        # Per-IP: max 600 requests per minute globally (generous for normal browsing)
         key = f"global:{ip}"
         _request_counts[key] = [t for t in _request_counts[key] if now - t < 60]
-        if len(_request_counts[key]) > 120:
+        if len(_request_counts[key]) > 600:
             return JSONResponse(status_code=429, content={"detail": "Too many requests"})
         _request_counts[key].append(now)
 
-        # Per-IP: max 40 figure detail requests per minute (anti-scraping)
+        # Per-IP: max 150 figure detail requests per minute (anti-scraping)
         if "/figures/" in path and path.count("/") <= 3 and not path.endswith("/report") and not path.endswith("/notes") and not path.endswith("/board"):
             detail_key = f"figures:{ip}"
             _request_counts[detail_key] = [t for t in _request_counts[detail_key] if now - t < 60]
-            if len(_request_counts[detail_key]) > 40:
+            if len(_request_counts[detail_key]) > 150:
                 return JSONResponse(status_code=429, content={"detail": "Too many requests. Please slow down."})
             _request_counts[detail_key].append(now)
 

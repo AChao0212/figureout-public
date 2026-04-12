@@ -12,7 +12,7 @@ const CURRENCIES = [
 ];
 
 export default function UserMenu() {
-  const { user, logout, loading } = useAuth();
+  const { user, token, logout, loading, refreshUser } = useAuth();
   const { colorMode, toggleColorMode } = useColorMode();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -43,13 +43,31 @@ export default function UserMenu() {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
+  // Retry fetching user profile if token is set but user failed to load.
+  // This covers the case where initial /user/me failed due to transient error.
+  useEffect(() => {
+    if (token && !user && !loading) {
+      refreshUser();
+    }
+  }, [token, user, loading, refreshUser]);
+
   if (loading) return null;
 
-  if (!user) {
+  // No token at all → show login link
+  if (!token) {
     return (
       <a href="/login" className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#C4A265] transition-colors hover:border-[#C4A265]/50 hover:bg-[#C4A265]/10">
         登入
       </a>
+    );
+  }
+
+  // Token exists but user object not loaded yet — show placeholder
+  if (!user) {
+    return (
+      <div className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs text-[#6e7681]">
+        載入中...
+      </div>
     );
   }
 

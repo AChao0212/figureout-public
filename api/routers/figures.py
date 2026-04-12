@@ -643,20 +643,29 @@ async def get_figure(
             related.extend([build_related(r) for r in franchise_result.all()])
 
     # Calculate price change %
-    current_avg = latest_snapshot.avg_price if latest_snapshot else None
-    current_median = latest_snapshot.median_price if latest_snapshot else None
-
-    # Fallback: compute from listings if no snapshot exists
-    if current_avg is None and current_median is None:
-        listing_prices = [float(l.price_usd) for l in all_listings if l.price_usd]
-        if listing_prices:
-            listing_prices_sorted = sorted(listing_prices)
-            n = len(listing_prices_sorted)
+    # Prefer rolling average from all recent (last 90 days) listings so a single
+    # fresh report with 1 sample doesn't override the "current" stats. Fall back
+    # to latest_snapshot only if we have no listings at all.
+    current_avg = None
+    current_median = None
+    listing_prices = [float(l.price_usd) for l in all_listings if l.price_usd]
+    if listing_prices:
+        listing_prices_sorted = sorted(listing_prices)
+        n = len(listing_prices_sorted)
+        # Trim 10% from each end when sample is large to drop outliers
+        if n >= 5:
+            tc = max(1, n // 10)
+            trimmed = listing_prices_sorted[tc:-tc]
+            current_avg = round(sum(trimmed) / len(trimmed), 2)
+        else:
             current_avg = round(sum(listing_prices_sorted) / n, 2)
-            if n % 2 == 1:
-                current_median = round(listing_prices_sorted[n // 2], 2)
-            else:
-                current_median = round((listing_prices_sorted[n // 2 - 1] + listing_prices_sorted[n // 2]) / 2, 2)
+        if n % 2 == 1:
+            current_median = round(listing_prices_sorted[n // 2], 2)
+        else:
+            current_median = round((listing_prices_sorted[n // 2 - 1] + listing_prices_sorted[n // 2]) / 2, 2)
+    elif latest_snapshot:
+        current_avg = latest_snapshot.avg_price
+        current_median = latest_snapshot.median_price
     price_change_pct = None
     if current_median is not None and figure.retail_price:
         retail_usd = _retail_to_usd(figure.retail_price, getattr(figure, "retail_currency", "JPY"))

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import PriceChart from "@/components/PriceChart";
 import ListingsTable from "@/components/ListingsTable";
 import ReportForm from "@/components/ReportForm";
@@ -108,7 +109,12 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   try {
     const res = await fetch(`${apiUrl}/figures/${id}`, { cache: "no-store" });
-    if (!res.ok) return { title: "找不到此公仔" };
+    if (!res.ok) {
+      return {
+        title: "找不到此公仔",
+        robots: { index: false, follow: false },
+      };
+    }
     const figure = await res.json();
 
     const priceInfo = figure.current_median_price
@@ -257,12 +263,7 @@ export default async function FigureDetailPage({
   const figure = await getFigure(id);
 
   if (!figure) {
-    return (
-      <div className="mx-auto max-w-7xl px-4 py-16 text-center sm:px-6 lg:px-8">
-        <h1 className="text-xl font-bold text-[#c9d1d9]">找不到此公仔</h1>
-        <p className="mt-2 text-sm text-[#6e7681]">此公仔不存在或已被移除。</p>
-      </div>
-    );
+    notFound();
   }
 
   const latestSnapshot =

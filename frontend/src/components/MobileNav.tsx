@@ -14,7 +14,7 @@ const CURRENCIES = [
 
 export default function MobileNav() {
   const [open, setOpen] = useState(false);
-  const { user, logout, loading } = useAuth();
+  const { user, token, logout, loading } = useAuth();
   const { colorMode, toggleColorMode } = useColorMode();
 
   const currentCurrency = typeof window !== "undefined"
@@ -100,10 +100,13 @@ export default function MobileNav() {
 
             {/* User section */}
             <div className="mt-2 border-t border-[#30363d] pt-2">
-              {!loading && !user && (
+              {!loading && !token && (
                 <Link href="/login" onClick={close} className="flex items-center justify-center rounded-lg bg-[#C4A265] px-3 py-2.5 text-sm font-medium text-white hover:bg-[#B89255]">
                   登入 / 註冊
                 </Link>
+              )}
+              {token && !user && (
+                <div className="px-3 py-2 text-center text-xs text-[#6e7681]">載入中...</div>
               )}
               {user && (
                 <>

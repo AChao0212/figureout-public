@@ -221,18 +221,48 @@ function deduplicatePriceHistory(
 }
 
 function buildJsonLd(figure: FigureDetail) {
-  const product: Record<string, unknown> = {
-    "@type": "Product",
-    name: figure.name,
-    image: figure.image_url || undefined,
-    sku: figure.id.toString(),
-    category: "PVC Figure",
-    ...(figure.manufacturer ? { brand: { "@type": "Brand", name: figure.manufacturer } } : {}),
-    ...(figure.original_name ? { alternateName: figure.original_name } : {}),
-  };
+  const RATES: Record<string, number> = { USD: 1, TWD: 32.2, JPY: 149.5, CNY: 7.25 };
+  const hasPrice = figure.current_avg_price != null || figure.current_median_price != null;
+
+  // Build main entity — use Product only when we have pricing data
+  const mainEntity: Record<string, unknown> = hasPrice
+    ? {
+        "@type": "Product",
+        name: figure.name,
+        image: figure.image_url || undefined,
+        sku: figure.id.toString(),
+        category: "PVC Figure",
+        ...(figure.manufacturer ? { brand: { "@type": "Brand", name: figure.manufacturer } } : {}),
+        ...(figure.original_name ? { alternateName: figure.original_name } : {}),
+      }
+    : {
+        "@type": "Thing",
+        name: figure.name,
+        image: figure.image_url || undefined,
+        ...(figure.manufacturer ? { brand: { "@type": "Brand", name: figure.manufacturer } } : {}),
+        ...(figure.original_name ? { alternateName: figure.original_name } : {}),
+      };
+
+  // Add AggregateOffer for figures with price data (required for valid Product schema)
+  if (hasPrice && figure.recent_listings && figure.recent_listings.length > 0) {
+    const prices = figure.recent_listings
+      .filter((l) => l.price_usd && l.price_usd > 0)
+      .map((l) => Math.round((l.price_usd ?? 0) * RATES.TWD));
+    if (prices.length > 0) {
+      mainEntity.offers = {
+        "@type": "AggregateOffer",
+        priceCurrency: "TWD",
+        lowPrice: Math.min(...prices),
+        highPrice: Math.max(...prices),
+        offerCount: prices.length,
+        availability: "https://schema.org/LimitedAvailability",
+      };
+    }
+  }
+
   // Add aggregateRating if we have ratings
   if (figure.rating_avg && figure.rating_count && figure.rating_count > 0) {
-    product.aggregateRating = {
+    mainEntity.aggregateRating = {
       "@type": "AggregateRating",
       ratingValue: figure.rating_avg.toFixed(1),
       bestRating: "5",
@@ -240,15 +270,42 @@ function buildJsonLd(figure: FigureDetail) {
       ratingCount: figure.rating_count,
     };
   }
-  const jsonLd: Record<string, unknown> = {
+
+  // BreadcrumbList for navigation structure
+  const breadcrumbItems: Record<string, unknown>[] = [
+    { "@type": "ListItem", position: 1, name: "FigureOut", item: "https://figureout.tw" },
+  ];
+  if (figure.franchise_name) {
+    breadcrumbItems.push({
+      "@type": "ListItem",
+      position: 2,
+      name: figure.franchise_name,
+      item: `https://figureout.tw/browse`,
+    });
+  }
+  breadcrumbItems.push({
+    "@type": "ListItem",
+    position: breadcrumbItems.length + 1,
+    name: figure.name,
+    item: `https://figureout.tw/figures/${figure.id}`,
+  });
+
+  return {
     "@context": "https://schema.org",
-    "@type": "WebPage",
-    name: figure.name + " - 二手行情",
-    description: `${figure.name}${figure.manufacturer ? " (" + figure.manufacturer + ")" : ""} PVC 公仔二手市場行情追蹤`,
-    url: `https://figureout.tw/figures/${figure.id}`,
-    mainEntity: product,
+    "@graph": [
+      {
+        "@type": "WebPage",
+        name: figure.name + " - 二手行情",
+        description: `${figure.name}${figure.manufacturer ? " (" + figure.manufacturer + ")" : ""} PVC 公仔二手市場行情追蹤`,
+        url: `https://figureout.tw/figures/${figure.id}`,
+        mainEntity,
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: breadcrumbItems,
+      },
+    ],
   };
-  return jsonLd;
 }
 
 export default async function FigureDetailPage({

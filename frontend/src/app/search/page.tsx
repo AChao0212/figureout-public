@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     canonical: "https://figureout.tw/search",
   },
   // Search result pages with filters shouldn't be indexed — infinite variations
-  robots: { index: false, follow: true },
+  robots: { index: false, follow: false },
 };
 
 interface Figure {

@@ -445,6 +445,16 @@ async def search_figures(
     return SearchResult(figures=figures, total=total)
 
 
+@router.get("/sitemap-ids")
+async def get_sitemap_ids(db: AsyncSession = Depends(get_db)):
+    """Return figure IDs that have at least one listing — for sitemap generation."""
+    from sqlalchemy import text as _t
+    result = await db.execute(_t(
+        "SELECT DISTINCT figure_id FROM listings WHERE figure_id IS NOT NULL ORDER BY figure_id"
+    ))
+    return {"ids": [row[0] for row in result.all()]}
+
+
 @router.get("/{figure_id}", response_model=FigureDetail)
 async def get_figure(
     figure_id: int,

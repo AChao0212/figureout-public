@@ -2,6 +2,9 @@ User-agent: *
 Allow: /
 Disallow: /admin
 Disallow: /api/
+Disallow: /search
+Disallow: /watchlist
+Disallow: /login
 
 User-agent: Googlebot
 Crawl-delay: 2

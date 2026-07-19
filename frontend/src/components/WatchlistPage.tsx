@@ -26,8 +26,53 @@ const CONDITION_LABELS: Record<string, string> = {
   sealed: "全新", opened: "拆檢", used: "拆擺", damaged: "瑕疵",
 };
 
+type PurchaseSortKey =
+  | "newest" | "oldest"
+  | "date_desc" | "date_asc"
+  | "price_desc" | "price_asc"
+  | "name_asc";
+
+/** Sort the purchase list client-side. Date sorts push undefined values to the bottom
+ *  so a half-filled "purchased without date" entry doesn't anchor the list. Prices
+ *  are normalized to TWD via live rates for cross-currency comparison. */
+function sortPurchases(
+  purchases: Purchase[],
+  key: PurchaseSortKey,
+  rates: Record<string, number>,
+): Purchase[] {
+  const arr = [...purchases];
+  const cmpDate = (a?: string, b?: string) => (a ?? "").localeCompare(b ?? "");
+  const priceTwd = (p: Purchase) =>
+    p.price && p.currency ? convertCurrency(p.price, p.currency, "TWD", rates as any) : null;
+
+  switch (key) {
+    case "newest":
+      return arr.sort((a, b) => cmpDate(b.created_at, a.created_at));
+    case "oldest":
+      return arr.sort((a, b) => cmpDate(a.created_at, b.created_at));
+    case "date_desc":
+      return arr.sort((a, b) => {
+        const av = a.purchase_date, bv = b.purchase_date;
+        if (av && bv) return cmpDate(bv, av);
+        if (av) return -1; if (bv) return 1; return 0;
+      });
+    case "date_asc":
+      return arr.sort((a, b) => {
+        const av = a.purchase_date, bv = b.purchase_date;
+        if (av && bv) return cmpDate(av, bv);
+        if (av) return -1; if (bv) return 1; return 0;
+      });
+    case "price_desc":
+      return arr.sort((a, b) => (priceTwd(b) ?? -Infinity) - (priceTwd(a) ?? -Infinity));
+    case "price_asc":
+      return arr.sort((a, b) => (priceTwd(a) ?? Infinity) - (priceTwd(b) ?? Infinity));
+    case "name_asc":
+      return arr.sort((a, b) => a.figure_name.localeCompare(b.figure_name));
+  }
+}
+
 export default function WatchlistPage() {
-  const { watchlist, removeFromWatchlist, clearWatchlist } = useWatchlist();
+  const { watchlist, removeFromWatchlist, clearWatchlist, refreshFromServer } = useWatchlist();
   const { purchases, refresh: refreshPurchases } = usePurchases();
   const { user, token, refreshUser } = useAuth();
   const rates = useExchangeRates();
@@ -35,6 +80,11 @@ export default function WatchlistPage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"watchlist" | "purchases">("watchlist");
   const [markFigure, setMarkFigure] = useState<{ id: number; name: string } | null>(null);
+  // Purchase list sort preference. "newest" = most recently added (default — matches
+  // the previous implicit ordering by created_at desc from the API).
+  const [purchaseSort, setPurchaseSort] = useState<
+    "newest" | "oldest" | "date_desc" | "date_asc" | "price_desc" | "price_asc" | "name_asc"
+  >("newest");
 
   const currency = typeof window !== "undefined"
     ? localStorage.getItem("figureout_currency") || "TWD"
@@ -50,8 +100,13 @@ export default function WatchlistPage() {
     setLoading(true);
     Promise.allSettled(
       watchlist.map((id) =>
-        fetch(`${API_BASE}/figures/${id}`).then((r) => {
-          if (!r.ok) throw new Error(`${r.status}`);
+        fetch(`${API_BASE}/figures/${id}?currency=${encodeURIComponent(currency)}`).then((r) => {
+          if (r.status === 404) {
+            // Figure was deleted — drop it from the watchlist so it doesn't
+            // become a phantom ID that we keep trying to fetch forever.
+            throw Object.assign(new Error("not_found"), { status: 404, id });
+          }
+          if (!r.ok) throw Object.assign(new Error(`${r.status}`), { status: r.status, id });
           return r.json() as Promise<FigureData>;
         }),
       ),
@@ -59,9 +114,18 @@ export default function WatchlistPage() {
       if (cancelled) return;
       setFigures(results.filter((r) => r.status === "fulfilled").map((r) => (r as PromiseFulfilledResult<FigureData>).value));
       setLoading(false);
+      // Clean up watchlist entries pointing at 404 figures
+      for (const r of results) {
+        if (r.status === "rejected") {
+          const err: any = r.reason;
+          if (err && err.status === 404 && typeof err.id === "number") {
+            removeFromWatchlist(err.id);
+          }
+        }
+      }
     });
     return () => { cancelled = true; };
-  }, [watchlist]);
+  }, [watchlist, removeFromWatchlist, currency]);
 
   const handleMarkPurchased = (figureId: number, figureName: string) => {
     if (!token) {
@@ -187,11 +251,29 @@ export default function WatchlistPage() {
             <p className="mt-1 text-xs text-[#484f58]">從收藏清單將公仔標記為已購入即可開始記帳</p>
           </div>
         ) : (
-          <div className="space-y-3">
-            {purchases.map((p) => (
-              <PurchaseCard key={p.id} purchase={p} onDelete={() => handleDeletePurchase(p.id)} />
-            ))}
-          </div>
+          <>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-xs text-[#6e7681]">排序</span>
+              <select
+                value={purchaseSort}
+                onChange={(e) => setPurchaseSort(e.target.value as typeof purchaseSort)}
+                className="rounded-md border border-[#30363d] bg-[#0d1117] px-2 py-1 text-xs text-[#c9d1d9] focus:border-[#C4A265] focus:outline-none"
+              >
+                <option value="newest">新增（新→舊）</option>
+                <option value="oldest">新增（舊→新）</option>
+                <option value="date_desc">購入日期（新→舊）</option>
+                <option value="date_asc">購入日期（舊→新）</option>
+                <option value="price_desc">價格（高→低）</option>
+                <option value="price_asc">價格（低→高）</option>
+                <option value="name_asc">名稱（A→Z）</option>
+              </select>
+            </div>
+            <div className="space-y-3">
+              {sortPurchases(purchases, purchaseSort, rates as unknown as Record<string, number>).map((p) => (
+                <PurchaseCard key={p.id} purchase={p} onDelete={() => handleDeletePurchase(p.id)} />
+              ))}
+            </div>
+          </>
         )
       )}
 
@@ -201,9 +283,12 @@ export default function WatchlistPage() {
           figureName={markFigure.name}
           onClose={() => setMarkFigure(null)}
           onSuccess={() => {
-            removeFromWatchlist(markFigure.id);
+            // Backend removes from watchlist atomically with purchase create,
+            // so we just re-sync instead of firing another DELETE.
+            refreshFromServer().catch(() => {});
             refreshPurchases();
             refreshUser();
+            setTab("purchases");
           }}
         />
       )}
@@ -277,20 +362,23 @@ function PurchaseCard({ purchase: p, onDelete }: { purchase: Purchase; onDelete:
           )}
 
           {editingNotes && (
-            <div className="mt-2 flex gap-1">
-              <input
-                type="text"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="備註..."
-                className="flex-1 rounded border border-[#30363d] bg-[#161b22] px-2 py-1 text-xs text-[#c9d1d9] focus:border-[#C4A265] focus:outline-none"
-              />
-              <button onClick={saveNotes} disabled={saving} className="rounded bg-[#C4A265] px-2 py-1 text-[10px] text-white disabled:opacity-50">
-                儲存
-              </button>
-              <button onClick={() => { setNotes(p.notes || ""); setEditingNotes(false); }} className="text-[10px] text-[#6e7681]">
-                取消
-              </button>
+            <div className="mt-2">
+              <div className="flex gap-1">
+                <input
+                  type="text"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="僅自己可見的備註..."
+                  className="flex-1 rounded border border-[#30363d] bg-[#161b22] px-2 py-1 text-xs text-[#c9d1d9] focus:border-[#C4A265] focus:outline-none"
+                />
+                <button onClick={saveNotes} disabled={saving} className="rounded bg-[#C4A265] px-2 py-1 text-[10px] text-white disabled:opacity-50">
+                  儲存
+                </button>
+                <button onClick={() => { setNotes(p.notes || ""); setEditingNotes(false); }} className="text-[10px] text-[#6e7681]">
+                  取消
+                </button>
+              </div>
+              <p className="mt-1 text-[10px] text-[#6e7681]">此備註僅自己可見，不會送到社群紀錄</p>
             </div>
           )}
         </div>
@@ -329,6 +417,9 @@ function PurchaseCard({ purchase: p, onDelete }: { purchase: Purchase; onDelete:
             submitLabel="儲存"
             successMessage="已儲存"
             dateLabel="購買日期"
+            notesLabel="備註（公開回報，選填）"
+            notesPlaceholder="成交頁面連結..."
+            notesHint="此備註會公開顯示在公仔詳細頁，請勿填寫個人隱私資訊"
             showAttribution={false}
             compact={true}
             onCancel={() => setAddingPrice(false)}

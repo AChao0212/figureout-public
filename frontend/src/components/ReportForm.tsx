@@ -20,6 +20,9 @@ interface ReportFormProps {
   successMessage?: string;
   hidePlatform?: boolean;
   dateLabel?: string;
+  notesLabel?: string;
+  notesPlaceholder?: string;
+  notesHint?: string; // extra small hint under the notes input, e.g. "此備註會公開顯示"
   onCancel?: () => void;
   compact?: boolean;
   showAttribution?: boolean;
@@ -33,6 +36,9 @@ export default function ReportForm({
   successMessage = "回報成功，感謝你！",
   hidePlatform = false,
   dateLabel = "成交日期",
+  notesLabel = "備註（選填）",
+  notesPlaceholder = "相關貼文連結",
+  notesHint,
   onCancel,
   compact = false,
   showAttribution = true,
@@ -75,6 +81,11 @@ export default function ReportForm({
     setToast(null);
 
     const price = Math.round(parseFloat(formData.price));
+    if (!Number.isFinite(price) || price <= 0) {
+      setToast({ type: "error", message: "請輸入有效價格" });
+      setSubmitting(false);
+      return;
+    }
     const data: ReportFormData = {
       price,
       currency: formData.currency,
@@ -184,10 +195,13 @@ export default function ReportForm({
                 className={inputClass} />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-[#6e7681]">備註（選填）</label>
+              <label className="mb-1 block text-xs text-[#6e7681]">{notesLabel}</label>
               <input type="text" value={formData.notes}
                 onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                className={inputClass} placeholder="相關貼文連結" />
+                className={inputClass} placeholder={notesPlaceholder} />
+              {notesHint && (
+                <p className="mt-1 text-[10px] text-[#8b949e]">{notesHint}</p>
+              )}
             </div>
           </div>
 

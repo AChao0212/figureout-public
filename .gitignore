@@ -48,3 +48,9 @@ tools/*.sql
 # Claude config
 CLAUDE.md
 .claude/
+
+# Generated artefacts — never commit (img_cache alone is 2.1GB)
+backups/
+img_cache/
+image_urls.txt
+tools/hpoi_scan/

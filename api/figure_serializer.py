@@ -17,6 +17,7 @@ def serialize_figure_base(fig, char_name=None, fran_name=None):
         "retail_currency": fig.retail_currency or "JPY",
         "sculptor": fig.sculptor,
         "painter": fig.painter,
+        "illustrator": fig.illustrator,
         "dimensions": fig.dimensions,
         "material": fig.material,
         "gender": fig.gender,
@@ -24,6 +25,7 @@ def serialize_figure_base(fig, char_name=None, fran_name=None):
         "age_rating": fig.age_rating,
         "release_date": fig.release_date,
         "reissue_dates": fig.reissue_dates,
+        "official_url": fig.official_url,
         "character_name": char_name,
         "franchise_name": fran_name,
     }

@@ -25,7 +25,7 @@ export default function RankingsPage() {
   const [applyMsg, setApplyMsg] = useState("");
   const [showApplyForm, setShowApplyForm] = useState(false);
   const [applyReason, setApplyReason] = useState("");
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   useEffect(() => {
     fetch(`${apiUrl}/user/rankings`)

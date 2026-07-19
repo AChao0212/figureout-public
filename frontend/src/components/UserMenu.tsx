@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "./AuthContext";
 import { useColorMode } from "./ColorModeContext";
 
@@ -26,12 +27,16 @@ export default function UserMenu() {
     setCurrencyState(fromUrl || saved || "TWD");
   }, []);
 
+  const router = useRouter();
+  const pathname = usePathname();
   const setCurrency = (code: string) => {
+    if (typeof window === "undefined") return;
     localStorage.setItem("figureout_currency", code);
-    // Update URL and reload to apply currency change
-    const url = new URL(window.location.href);
-    url.searchParams.set("currency", code);
-    window.location.href = url.toString();
+    setCurrencyState(code);
+    // Soft navigation preserves any unsaved form state — no hard reload.
+    const params = new URLSearchParams(window.location.search);
+    params.set("currency", code);
+    router.replace(`${pathname}?${params.toString()}`);
   };
 
   useEffect(() => {

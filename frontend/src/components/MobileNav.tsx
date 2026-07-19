@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "./AuthContext";
 import { useColorMode } from "./ColorModeContext";
 
@@ -17,15 +18,24 @@ export default function MobileNav() {
   const { user, token, logout, loading } = useAuth();
   const { colorMode, toggleColorMode } = useColorMode();
 
-  const currentCurrency = typeof window !== "undefined"
-    ? localStorage.getItem("figureout_currency") || new URLSearchParams(window.location.search).get("currency") || "TWD"
-    : "TWD";
+  const router = useRouter();
+  const pathname = usePathname();
+  const [currentCurrency, setCurrentCurrency] = useState("TWD");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem("figureout_currency");
+    const fromUrl = new URLSearchParams(window.location.search).get("currency");
+    setCurrentCurrency(fromUrl || saved || "TWD");
+  }, []);
 
   const setCurrency = (code: string) => {
+    if (typeof window === "undefined") return;
     localStorage.setItem("figureout_currency", code);
-    const url = new URL(window.location.href);
-    url.searchParams.set("currency", code);
-    window.location.href = url.toString();
+    setCurrentCurrency(code);
+    // Soft navigation: preserve unsaved form state instead of full reload.
+    const params = new URLSearchParams(window.location.search);
+    params.set("currency", code);
+    router.replace(`${pathname}?${params.toString()}`);
   };
 
   const close = () => setOpen(false);

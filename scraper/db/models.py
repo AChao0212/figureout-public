@@ -50,6 +50,7 @@ class Figure(Base):
     series = Column(Text)
     manufacturer = Column(Text)
     character_id = Column(Integer, ForeignKey("characters.id"))
+    franchise_id = Column(Integer, ForeignKey("franchises.id"))
     version_name = Column(Text)
     scale = Column(Text)
     release_year = Column(Integer)
@@ -61,6 +62,7 @@ class Figure(Base):
     # New detail fields
     sculptor = Column(Text)
     painter = Column(Text)
+    illustrator = Column(Text)  # 原画 — editor/submitter-curated, not on Hpoi
     dimensions = Column(Text)
     material = Column(Text)
     gender = Column(Text)
@@ -68,13 +70,19 @@ class Figure(Base):
     age_rating = Column(Text)
     release_date = Column(Text)
     reissue_dates = Column(Text)
+    official_url = Column(Text)  # manufacturer's official product page URL
     view_count = Column(Integer, default=0)
     retail_currency = Column(Text)
     avg_price = Column(Numeric)
     median_price = Column(Numeric)
+    # Per-source last price-scan timestamps — drive the refresh-oriented
+    # selection in scrape_yahoo_prices / scrape_mercari_prices (see main.py).
+    yahoo_scanned_at = Column(TIMESTAMP(timezone=True))
+    mercari_scanned_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     character = relationship("Character", back_populates="figures")
+    franchise = relationship("Franchise", foreign_keys=[franchise_id])
     listings = relationship("Listing", back_populates="figure")
     price_snapshots = relationship("PriceSnapshot", back_populates="figure")
     user_reports = relationship("UserReport", back_populates="figure")
@@ -91,7 +99,7 @@ class Listing(Base):
     title = Column(Text, nullable=False)
     price = Column(Numeric, nullable=False)
     currency = Column(Text, nullable=False)
-    price_usd = Column(Numeric)
+    price_canonical = Column(Numeric)
     condition = Column(Text)
     is_sold = Column(Boolean, default=False)
     listed_at = Column(TIMESTAMP(timezone=True))

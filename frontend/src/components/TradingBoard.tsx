@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAuth } from "./AuthContext";
+import { formatCurrency } from "@/lib/currency";
 
 interface Order {
   id: number;
@@ -18,9 +19,6 @@ interface Order {
 
 const CONDITION_LABELS: Record<string, string> = {
   sealed: "全新", opened: "拆檢", used: "拆擺", damaged: "瑕疵",
-};
-const CURRENCY_SYMBOLS: Record<string, string> = {
-  TWD: "$", JPY: "\u00a5", USD: "$", CNY: "\u00a5",
 };
 
 export default function TradingBoard({ figureId }: { figureId: string }) {
@@ -43,9 +41,12 @@ export default function TradingBoard({ figureId }: { figureId: string }) {
 
   const fetchOrders = () => {
     fetch(`${apiUrl}/figures/${figureId}/board`)
-      .then((r) => r.json())
+      .then((r) => r.ok ? r.json() : Promise.reject(r))
       .then(setOrders)
-      .catch(() => {});
+      .catch(() => {
+        setToast({ type: "error", msg: "載入交易看板失敗" });
+        setTimeout(() => setToast(null), 3000);
+      });
   };
 
   useEffect(() => { fetchOrders(); }, [figureId, apiUrl]);
@@ -77,11 +78,22 @@ export default function TradingBoard({ figureId }: { figureId: string }) {
 
   const handleDelete = async (orderId: number) => {
     if (!confirm("確定要刪除此交易單？")) return;
-    await fetch(`${apiUrl}/figures/${figureId}/board/${orderId}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    fetchOrders();
+    try {
+      const res = await fetch(`${apiUrl}/figures/${figureId}/board/${orderId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setToast({ type: "error", msg: err.detail || "刪除失敗" });
+        setTimeout(() => setToast(null), 3000);
+        return;
+      }
+      fetchOrders();
+    } catch {
+      setToast({ type: "error", msg: "網路錯誤" });
+      setTimeout(() => setToast(null), 3000);
+    }
   };
 
   const handleShowContact = async (orderId: number) => {
@@ -90,11 +102,22 @@ export default function TradingBoard({ figureId }: { figureId: string }) {
       const res = await fetch(`${apiUrl}/figures/${figureId}/board/${orderId}/contact`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        const data = await res.json();
-        setContactVisible((prev) => ({ ...prev, [orderId]: data.contact }));
+      if (res.status === 401 || res.status === 403) {
+        window.location.href = "/login";
+        return;
       }
-    } catch {}
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setToast({ type: "error", msg: err.detail || "取得聯絡方式失敗" });
+        setTimeout(() => setToast(null), 3000);
+        return;
+      }
+      const data = await res.json();
+      setContactVisible((prev) => ({ ...prev, [orderId]: data.contact }));
+    } catch {
+      setToast({ type: "error", msg: "網路錯誤" });
+      setTimeout(() => setToast(null), 3000);
+    }
   };
 
   const buyOrders = orders.filter((o) => o.order_type === "buy");
@@ -119,7 +142,7 @@ export default function TradingBoard({ figureId }: { figureId: string }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-base font-bold text-[#e6edf3]">
-              {CURRENCY_SYMBOLS[o.currency] || "$"}{o.price.toLocaleString()}
+              {formatCurrency(o.price, o.currency)}
             </span>
             <span className="rounded-full bg-[#1c2333] px-1.5 py-0.5 text-[10px] text-[#8b949e]">
               {CONDITION_LABELS[o.condition] || o.condition}

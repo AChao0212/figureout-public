@@ -67,6 +67,7 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: https://figureout.tw/api
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      INTERNAL_API_URL: http://api:8000
     depends_on:
       - api
 

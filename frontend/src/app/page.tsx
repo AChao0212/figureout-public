@@ -25,7 +25,9 @@ interface FranchiseOut {
 }
 
 async function getFeatured(): Promise<FigureOut[]> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  // Server-side: prefer internal URL (http://api:8000) to avoid going out
+  // through Cloudflare (which can ETIMEDOUT from inside the container).
+  const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   try {
     const res = await fetch(`${apiUrl}/browse/featured?limit=12`, {
       next: { revalidate: 300 },
@@ -38,7 +40,9 @@ async function getFeatured(): Promise<FigureOut[]> {
 }
 
 async function getPopularFranchises(): Promise<FranchiseOut[]> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  // Server-side: prefer internal URL (http://api:8000) to avoid going out
+  // through Cloudflare (which can ETIMEDOUT from inside the container).
+  const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   try {
     const res = await fetch(`${apiUrl}/browse/popular-franchises?limit=12`, {
       next: { revalidate: 300 },

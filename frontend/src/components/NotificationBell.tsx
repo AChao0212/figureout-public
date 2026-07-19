@@ -36,7 +36,7 @@ export default function NotificationBell() {
 
   return (
     <Link
-      href="/dashboard?tab=notifications"
+      href="/watchlist"
       className="relative flex h-8 w-8 items-center justify-center rounded-md text-gray-400 transition-colors hover:text-[#C4A265]"
       aria-label="通知"
     >

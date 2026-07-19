@@ -48,7 +48,7 @@ function AutocompleteInput({
     if (q.length < 1) { setSuggestions([]); return; }
     timeoutRef.current = setTimeout(async () => {
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
         const res = await fetch(`${apiUrl}/browse/autocomplete/${endpoint}?q=${encodeURIComponent(q)}`);
         if (res.ok) {
           setSuggestions(await res.json());
@@ -85,9 +85,10 @@ export default function SubmitFigurePage() {
   const [form, setForm] = useState({
     name: "", original_name: "", character_name: "", franchise_name: "",
     manufacturer: "", series: "", scale: "", jan_code: "",
-    image_url: "", notes: "", retail_price: "",
+    image_url: "", hpoi_link: "", notes: "", retail_price: "",
     figure_type: "", age_rating: "", material: "",
-    sculptor: "", painter: "", dimensions: "", release_date: "",
+    sculptor: "", painter: "", illustrator: "",
+    dimensions: "", release_date: "", official_url: "",
   });
   const [retailCurrency, setRetailCurrency] = useState<"JPY" | "CNY">("JPY");
   const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
@@ -111,7 +112,7 @@ export default function SubmitFigurePage() {
       return;
     }
     setStatus("submitting");
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
     try {
       const res = await fetch(`${apiUrl}/figures/submissions`, {
         method: "POST",
@@ -124,7 +125,7 @@ export default function SubmitFigurePage() {
       });
       if (res.ok) {
         setStatus("success");
-        setForm({ name: "", original_name: "", character_name: "", franchise_name: "", manufacturer: "", series: "", scale: "", jan_code: "", image_url: "", notes: "", retail_price: "", figure_type: "", age_rating: "", material: "", sculptor: "", painter: "", dimensions: "", release_date: "" });
+        setForm({ name: "", original_name: "", character_name: "", franchise_name: "", manufacturer: "", series: "", scale: "", jan_code: "", image_url: "", hpoi_link: "", notes: "", retail_price: "", figure_type: "", age_rating: "", material: "", sculptor: "", painter: "", illustrator: "", dimensions: "", release_date: "", official_url: "" });
         setRetailCurrency("JPY");
       } else {
         setStatus("error");
@@ -235,6 +236,17 @@ export default function SubmitFigurePage() {
                 placeholder="例：奶牛" endpoint="painters" />
             </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <AutocompleteInput label="原畫" value={form.illustrator}
+                onChange={(v) => setForm({ ...form, illustrator: v })}
+                placeholder="例：Nardack" endpoint="illustrators" />
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-[#c9d1d9]">官方頁面</label>
+                <input type="url" placeholder="例：https://www.goodsmile.com/..."
+                  value={form.official_url} onChange={(e) => setForm({ ...form, official_url: e.target.value })}
+                  className={inputClass} />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-[#c9d1d9]">尺寸</label>
                 <input type="text" placeholder="例：H=250mm"
@@ -302,6 +314,13 @@ export default function SubmitFigurePage() {
               <input type="url" required placeholder="https://..."
                 value={form.image_url} onChange={(e) => setForm({ ...form, image_url: e.target.value })}
                 className={inputClass} />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-[#c9d1d9]">hpoi 連結</label>
+              <input type="url" placeholder="https://www.hpoi.net/hobby/..."
+                value={form.hpoi_link} onChange={(e) => setForm({ ...form, hpoi_link: e.target.value })}
+                className={inputClass} />
+              <p className="mt-1 text-[10px] text-[#484f58]">選填，方便管理員核對資料</p>
             </div>
             <div>
               <label className="mb-1.5 block text-sm font-medium text-[#c9d1d9]">備註</label>

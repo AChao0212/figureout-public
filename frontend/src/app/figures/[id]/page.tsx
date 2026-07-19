@@ -12,6 +12,8 @@ import WatchlistButton from "@/components/WatchlistButton";
 import ConditionPriceTabs from "@/components/ConditionPriceTabs";
 import FigureRating from "@/components/FigureRating";
 import AdminEditButton from "@/components/AdminEditButton";
+import ImageWithFallback from "@/components/ImageWithFallback";
+import { formatCurrency } from "@/lib/currency";
 
 interface ConditionPrice {
   condition: string;
@@ -33,8 +35,10 @@ interface FigureDetail {
   image_url?: string;
   sculptor?: string;
   painter?: string;
+  illustrator?: string;
   dimensions?: string;
   material?: string;
+  official_url?: string;
   gender?: string;
   figure_type?: string;
   age_rating?: string;
@@ -48,6 +52,7 @@ interface FigureDetail {
   original_name?: string;
   retail_price?: number;
   retail_currency?: string;
+  retail_price_display?: number;
   character_name?: string;
   franchise_name?: string;
   condition_prices: ConditionPrice[];
@@ -84,7 +89,7 @@ interface FigureDetail {
     title: string;
     price: number;
     currency: string;
-    price_usd?: number;
+    price_canonical?: number;
     condition: string;
     is_sold: boolean;
     sold_at?: string;
@@ -93,10 +98,10 @@ interface FigureDetail {
   }[];
 }
 
-async function getFigure(id: string): Promise<FigureDetail | null> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+async function getFigure(id: string, currency: string = "TWD"): Promise<FigureDetail | null> {
+  const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   try {
-    const res = await fetch(`${apiUrl}/figures/${id}`, { cache: "no-store" });
+    const res = await fetch(`${apiUrl}/figures/${id}?currency=${encodeURIComponent(currency)}`, { cache: "no-store" });
     if (!res.ok) return null;
     return res.json();
   } catch {
@@ -106,7 +111,7 @@ async function getFigure(id: string): Promise<FigureDetail | null> {
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   try {
     const res = await fetch(`${apiUrl}/figures/${id}`, { cache: "no-store" });
     if (!res.ok) {
@@ -116,6 +121,15 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
       };
     }
     const figure = await res.json();
+
+    // Every figure page has unique structured product data (name, manufacturer,
+    // character, franchise, scale, image, JSON-LD Product schema) — that's
+    // enough for Google to treat it as a valid catalog entry even before any
+    // listings come in. Previously we noindexed figures without listing data,
+    // but that was over-cautious: it locked ~9K legit product pages out of
+    // search and removed long-tail discovery (someone googling a figure name
+    // could no longer land on us). Index all real figures; only noindex on
+    // outright fetch failures (handled above with `!res.ok`).
 
     const priceInfo = figure.current_median_price
       ? `目前中位價 NT$${Math.round(figure.current_median_price * 32.2).toLocaleString()}`
@@ -128,6 +142,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     return {
       title: `${figure.name} — 二手行情`,
       description,
+      robots: { index: true, follow: true },
       alternates: {
         canonical: `https://figureout.tw/figures/${id}`,
       },
@@ -151,36 +166,48 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   }
 }
 
-const EXCHANGE_RATES: Record<string, number> = {
-  USD: 1,
-  TWD: 32.2,
-  JPY: 149.5,
-  CNY: 7.25,
-};
+// Backend already converts prices to display currency (via /figures/{id}?currency=XXX),
+// so `formatPrice` is just an alias to the shared `formatCurrency` helper.
+const formatPrice = formatCurrency;
 
-function formatPrice(priceUsd: number, currency: string = "TWD"): string {
-  const rate = EXCHANGE_RATES[currency] || 1;
-  const converted = priceUsd * rate;
-  const symbols: Record<string, string> = {
-    TWD: "NT$",
-    JPY: "\u00a5",
-    USD: "$",
-    CNY: "\u00a5",
-  };
-  const symbol = symbols[currency] || currency + " ";
-  if (currency === "JPY") {
-    return `${symbol}${Math.round(converted).toLocaleString()}`;
+// Multi-value fields (sculptor/painter/series) may hold several values joined
+// by the Chinese enumeration comma 「、」. When a `searchKey` is supplied we
+// split on it and render each part as its own search link, so e.g.
+// "Yoshi、そんそーす" becomes two clickable sculptors.
+const MULTI_SPLIT = /\s*、\s*/;
+
+// Build a search URL: ?{searchKey}={value}&{extraK}={extraV}... — extraParams
+// lets the character link keep its franchise scope after a 、 split, so
+// "貞德、莫德雷德" each get linked WITH the figure's franchise context.
+function _searchHref(searchKey: string, value: string, extraParams?: Record<string, string | undefined>): string {
+  const qs = [`${searchKey}=${encodeURIComponent(value)}`];
+  if (extraParams) {
+    for (const [k, v] of Object.entries(extraParams)) {
+      if (v) qs.push(`${k}=${encodeURIComponent(v)}`);
+    }
   }
-  return `${symbol}${converted.toLocaleString(undefined, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  })}`;
+  return `/search?${qs.join("&")}`;
 }
 
-function Tag({ label, value, href }: { label: string; value?: string | null; href?: string }) {
-  if (!value) return null;
-  return href ? (
-    <a href={href} className="inline-flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2 py-0.5 text-xs transition-colors hover:border-[#C4A265]/50">
+function Tag({ label, value, href, searchKey, extraParams }: { label: string; value?: string | null; href?: string; searchKey?: string; extraParams?: Record<string, string | undefined> }) {
+  if (!value || HIDDEN_PLACEHOLDERS.has(value.trim())) return null;
+  const chip = "inline-flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2 py-0.5 text-xs transition-colors hover:border-[#C4A265]/50";
+  if (searchKey && value.includes("、")) {
+    const parts = value.split(MULTI_SPLIT).filter(Boolean);
+    return (
+      <>
+        {parts.map((p, i) => (
+          <a key={i} href={_searchHref(searchKey, p, extraParams)} className={chip}>
+            {i === 0 && <span className="text-[#6e7681]">{label}</span>}
+            <span className="text-[#C4A265]">{p}</span>
+          </a>
+        ))}
+      </>
+    );
+  }
+  const finalHref = searchKey ? _searchHref(searchKey, value, extraParams) : href;
+  return finalHref ? (
+    <a href={finalHref} className={chip}>
       <span className="text-[#6e7681]">{label}</span>
       <span className="text-[#C4A265]">{value}</span>
     </a>
@@ -192,14 +219,39 @@ function Tag({ label, value, href }: { label: string; value?: string | null; hre
   );
 }
 
-function InfoRow({ label, value, href }: { label: string; value?: string | null; href?: string }) {
-  const display = value || "未知";
-  const isUnknown = !value;
+// Globally-meaningless placeholder values that imported/auto-generated rows use
+// for "no real data". Hide these so a normal user doesn't see a wall of
+// "角色: 其他" / "作品: 待分類" / "尺寸: 未知" rows. (Editor view is via /admin,
+// which has its own form-based UI.)
+const HIDDEN_PLACEHOLDERS = new Set(["未知", "未分類", "待分類", "其他", "其它"]);
+
+function InfoRow({ label, value, href, searchKey, extraParams }: { label: string; value?: string | null; href?: string; searchKey?: string; extraParams?: Record<string, string | undefined> }) {
+  // Don't render the row at all if there's nothing meaningful to show.
+  if (!value || HIDDEN_PLACEHOLDERS.has(value.trim())) return null;
+  const display = value;
+  const isUnknown = false;
+  if (searchKey && value && value.includes("、")) {
+    const parts = value.split(MULTI_SPLIT).filter(Boolean);
+    return (
+      <div className="flex items-start gap-2 py-1">
+        <span className="w-16 shrink-0 text-xs text-[#6e7681]">{label}</span>
+        <span className="min-w-0 break-words text-sm">
+          {parts.map((p, i) => (
+            <span key={i}>
+              <a href={_searchHref(searchKey, p, extraParams)} className="text-[#C4A265] hover:underline">{p}</a>
+              {i < parts.length - 1 && <span className="text-[#6e7681]">、</span>}
+            </span>
+          ))}
+        </span>
+      </div>
+    );
+  }
+  const finalHref = searchKey && value ? _searchHref(searchKey, value, extraParams) : href;
   return (
     <div className="flex items-start gap-2 py-1">
       <span className="w-16 shrink-0 text-xs text-[#6e7681]">{label}</span>
-      {href && !isUnknown ? (
-        <a href={href} className="min-w-0 break-words text-sm text-[#C4A265] hover:underline">{display}</a>
+      {finalHref && !isUnknown ? (
+        <a href={finalHref} className="min-w-0 break-words text-sm text-[#C4A265] hover:underline">{display}</a>
       ) : (
         <span className={`min-w-0 break-words text-sm ${isUnknown ? "text-[#484f58]" : "text-[#c9d1d9]"}`}>{display}</span>
       )}
@@ -220,34 +272,57 @@ function deduplicatePriceHistory(
   );
 }
 
+// Safely serialize an object for embedding in <script type="application/ld+json">.
+// JSON.stringify does NOT escape </script>, <, >, or &, so we must do it manually
+// to prevent XSS via user-controlled figure names / descriptions.
+function safeJsonLd(obj: unknown): string {
+  return JSON.stringify(obj)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 function buildJsonLd(figure: FigureDetail) {
-  const RATES: Record<string, number> = { USD: 1, TWD: 32.2, JPY: 149.5, CNY: 7.25 };
   const hasPrice = figure.current_avg_price != null || figure.current_median_price != null;
 
-  // Build main entity — use Product only when we have pricing data
-  const mainEntity: Record<string, unknown> = hasPrice
-    ? {
-        "@type": "Product",
-        name: figure.name,
-        image: figure.image_url || undefined,
-        sku: figure.id.toString(),
-        category: "PVC Figure",
-        ...(figure.manufacturer ? { brand: { "@type": "Brand", name: figure.manufacturer } } : {}),
-        ...(figure.original_name ? { alternateName: figure.original_name } : {}),
-      }
-    : {
-        "@type": "Thing",
-        name: figure.name,
-        image: figure.image_url || undefined,
-        ...(figure.manufacturer ? { brand: { "@type": "Brand", name: figure.manufacturer } } : {}),
-        ...(figure.original_name ? { alternateName: figure.original_name } : {}),
-      };
+  // Always use Product — even without pricing data, it's still a sellable
+  // physical product. The previous "Thing" fallback was invalid Schema.org:
+  // Thing doesn't accept `brand` or `aggregateRating`, so GSC was flagging
+  // these as "「<parent_node>」欄位的物件類型無效". Product with optional
+  // offers/aggregateRating is valid in both cases.
+  const mainEntity: Record<string, unknown> = {
+    "@type": "Product",
+    name: figure.name,
+    image: figure.image_url || undefined,
+    sku: figure.id.toString(),
+    category: "PVC Figure",
+    ...(figure.manufacturer ? { brand: { "@type": "Brand", name: figure.manufacturer } } : {}),
+    ...(figure.original_name ? { alternateName: figure.original_name } : {}),
+    // Map official_url onto Schema.org's Product.url (canonical official source).
+    ...(figure.official_url ? { url: figure.official_url } : {}),
+    // Illustrator(s) — surface as Product.creator (Person[]). Split on 「、」
+    // to surface multi-illustrator credits as distinct entities for SEO.
+    ...(figure.illustrator
+      ? {
+          creator: figure.illustrator
+            .split(/[、,]/)
+            .map((n) => n.trim())
+            .filter(Boolean)
+            .map((name) => ({ "@type": "Person", name })),
+        }
+      : {}),
+  };
 
-  // Add AggregateOffer for figures with price data (required for valid Product schema)
+  // Add AggregateOffer for figures with price data (required for valid Product schema).
+  // SEO crawlers want fixed-currency numbers; we use the lib's fallback rate (no live
+  // rate available in this server render path).
   if (hasPrice && figure.recent_listings && figure.recent_listings.length > 0) {
     const prices = figure.recent_listings
-      .filter((l) => l.price_usd && l.price_usd > 0)
-      .map((l) => Math.round((l.price_usd ?? 0) * RATES.TWD));
+      .filter((l) => l.price_canonical && l.price_canonical > 0)
+      // price_canonical is already TWD — no conversion needed for the JSON-LD AggregateOffer.
+      .map((l) => Math.round(l.price_canonical ?? 0));
     if (prices.length > 0) {
       mainEntity.offers = {
         "@type": "AggregateOffer",
@@ -317,15 +392,23 @@ export default async function FigureDetailPage({
 }) {
   const { id } = await params;
   const { currency = "TWD" } = await searchParams;
-  const figure = await getFigure(id);
+  // Backend converts all aggregates (avg/median/price_history/condition_prices) to this currency
+  // using live rates. Frontend only formats with the right symbol.
+  const figure = await getFigure(id, currency);
 
   if (!figure) {
     notFound();
   }
 
-  const latestSnapshot =
+  // Overall min/max across every snapshot day. The previous "latest snapshot only"
+  // semantics gave nonsense for single-listing days (min == max == that one price).
+  const overallMin =
     figure.price_history.length > 0
-      ? figure.price_history[figure.price_history.length - 1]
+      ? Math.min(...figure.price_history.map(p => p.min_price).filter(v => v != null))
+      : null;
+  const overallMax =
+    figure.price_history.length > 0
+      ? Math.max(...figure.price_history.map(p => p.max_price).filter(v => v != null))
       : null;
 
   const chartData = deduplicatePriceHistory(figure.price_history);
@@ -334,24 +417,48 @@ export default async function FigureDetailPage({
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(buildJsonLd(figure)) }}
+        dangerouslySetInnerHTML={{ __html: safeJsonLd(buildJsonLd(figure)) }}
       />
       <PageTracker page={`/figures/${id}`} figureId={parseInt(id)} />
 
       {/* Breadcrumb */}
       {(figure.franchise_name || figure.character_name) && (
         <nav className="mb-4 flex flex-wrap items-center text-xs text-[#6e7681]">
-          {figure.franchise_name && (
-            <a href={`/search?q=${encodeURIComponent(figure.franchise_name)}`} className="text-[#C4A265] hover:underline">
-              {figure.franchise_name}
-            </a>
-          )}
+          {figure.franchise_name && (() => {
+            const parts = figure.franchise_name.includes("、")
+              ? figure.franchise_name.split(/\s*、\s*/).filter(Boolean)
+              : [figure.franchise_name];
+            return (
+              <>
+                {parts.map((p, i) => (
+                  <span key={i}>
+                    <a href={`/search?franchise=${encodeURIComponent(p)}`} className="text-[#C4A265] hover:underline">{p}</a>
+                    {i < parts.length - 1 && <span className="text-[#6e7681]">、</span>}
+                  </span>
+                ))}
+              </>
+            );
+          })()}
           {figure.franchise_name && figure.character_name && <span className="mx-1.5">&gt;</span>}
-          {figure.character_name && (
-            <a href={`/search?character=${encodeURIComponent(figure.character_name)}&q=${encodeURIComponent(figure.franchise_name || "")}`} className="text-[#C4A265] hover:underline">
-              {figure.character_name}
-            </a>
-          )}
+          {figure.character_name && (() => {
+            const fr = figure.franchise_name ? `&franchise=${encodeURIComponent(figure.franchise_name)}` : "";
+            const parts = figure.character_name.includes("、")
+              ? figure.character_name.split(/\s*、\s*/).filter(Boolean)
+              : [figure.character_name];
+            return (
+              <>
+                {parts.map((p, i) => (
+                  <span key={i}>
+                    <a
+                      href={`/search?character=${encodeURIComponent(p)}${fr}`}
+                      className="text-[#C4A265] hover:underline"
+                    >{p}</a>
+                    {i < parts.length - 1 && <span className="text-[#6e7681]">、</span>}
+                  </span>
+                ))}
+              </>
+            );
+          })()}
           <span className="mx-1.5">&gt;</span>
           <span className="text-[#8b949e]">{figure.name}</span>
         </nav>
@@ -361,13 +468,13 @@ export default async function FigureDetailPage({
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:gap-6">
         {/* Image */}
         <div className="shrink-0 sm:w-[300px]">
-          {figure.image_url ? (
-            <div className="rounded-lg border border-[#30363d] bg-[#161b22] sm:h-full">
-              <img src={figure.image_url} alt={figure.name} className="h-full w-full object-contain" />
-            </div>
-          ) : (
-            <div className="flex h-[200px] w-full items-center justify-center rounded-lg border border-[#30363d] bg-[#161b22] text-sm text-[#484f58] sm:h-full">No Image</div>
-          )}
+          <div className="rounded-lg border border-[#30363d] bg-[#161b22] sm:h-full">
+            <ImageWithFallback
+              src={figure.image_url}
+              alt={figure.name}
+              className="h-full w-full min-h-[200px] object-contain"
+            />
+          </div>
         </div>
 
         {/* Title + Tags + Price Summary + Condition Prices */}
@@ -379,12 +486,13 @@ export default async function FigureDetailPage({
               <FigureRating figureId={id} initialAvg={figure.rating_avg ?? null} initialCount={figure.rating_count ?? 0} />
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <Tag label="製造商" value={figure.manufacturer} href={figure.manufacturer ? `/search?manufacturer=${encodeURIComponent(figure.manufacturer)}` : undefined} />
+              <Tag label="製造商" value={figure.manufacturer} searchKey="manufacturer" />
               <Tag label="比例" value={figure.scale} href={figure.scale ? `/search?scale=${encodeURIComponent(figure.scale)}` : undefined} />
-              <Tag label="系列" value={figure.series} href={figure.series ? `/search?q=${encodeURIComponent(figure.series)}` : undefined} />
+              <Tag label="系列" value={figure.series} searchKey="series" />
               <Tag label="版本" value={figure.version_name} href={figure.version_name ? `/search?q=${encodeURIComponent(figure.version_name)}` : undefined} />
-              <Tag label="原型師" value={figure.sculptor} href={figure.sculptor ? `/search?sculptor=${encodeURIComponent(figure.sculptor)}` : undefined} />
-              <Tag label="塗裝師" value={figure.painter} href={figure.painter ? `/search?painter=${encodeURIComponent(figure.painter)}` : undefined} />
+              <Tag label="原型師" value={figure.sculptor} searchKey="sculptor" />
+              <Tag label="塗裝師" value={figure.painter} searchKey="painter" />
+              <Tag label="原畫" value={figure.illustrator} searchKey="illustrator" />
             </div>
           </div>
 
@@ -407,19 +515,19 @@ export default async function FigureDetailPage({
               <div>
                 <p className="text-xs text-[#6e7681]">最低</p>
                 <p className="text-base font-bold text-[#c9d1d9] sm:text-xl">
-                  {latestSnapshot?.min_price != null ? formatPrice(latestSnapshot.min_price, currency) : "--"}
+                  {overallMin != null ? formatPrice(overallMin, currency) : "--"}
                 </p>
               </div>
               <div>
                 <p className="text-xs text-[#6e7681]">最高</p>
                 <p className="text-base font-bold text-[#c9d1d9] sm:text-xl">
-                  {latestSnapshot?.max_price != null ? formatPrice(latestSnapshot.max_price, currency) : "--"}
+                  {overallMax != null ? formatPrice(overallMax, currency) : "--"}
                 </p>
               </div>
             </div>
             {figure.retail_price != null && (
               <p className="mt-3 text-xs text-[#6e7681]">
-                定價 <span className="text-[#8b949e]">{formatPrice(figure.retail_price! * ({"JPY": 1/149.5, "CNY": 1/7.25}[figure.retail_currency || "JPY"] || 1/149.5), currency)} ({"\u00a5"}{figure.retail_price.toLocaleString()})</span>
+                定價 <span className="text-[#8b949e]">{figure.retail_price_display != null ? formatPrice(figure.retail_price_display, currency) : "--"} ({"\u00a5"}{figure.retail_price.toLocaleString()})</span>
               </p>
             )}
             {figure.price_change_pct != null && (
@@ -464,14 +572,20 @@ export default async function FigureDetailPage({
         <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[#6e7681]">商品資訊</h2>
           <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
-            <InfoRow label="製造商" value={figure.manufacturer} href={figure.manufacturer ? `/search?manufacturer=${encodeURIComponent(figure.manufacturer)}` : undefined} />
+            <InfoRow label="製造商" value={figure.manufacturer} searchKey="manufacturer" />
             <InfoRow label="比例" value={figure.scale} href={figure.scale ? `/search?scale=${encodeURIComponent(figure.scale)}` : undefined} />
-            <InfoRow label="系列" value={figure.series} href={figure.series ? `/search?q=${encodeURIComponent(figure.series)}` : undefined} />
+            <InfoRow label="系列" value={figure.series} searchKey="series" />
             <InfoRow label="版本" value={figure.version_name} />
-            <InfoRow label="角色" value={figure.character_name} href={figure.character_name ? `/search?character=${encodeURIComponent(figure.character_name)}&q=${encodeURIComponent(figure.franchise_name || "")}` : undefined} />
-            <InfoRow label="作品" value={figure.franchise_name} href={figure.franchise_name ? `/search?q=${encodeURIComponent(figure.franchise_name)}` : undefined} />
-            <InfoRow label="原型師" value={figure.sculptor} href={figure.sculptor ? `/search?sculptor=${encodeURIComponent(figure.sculptor)}` : undefined} />
-            <InfoRow label="塗裝師" value={figure.painter} href={figure.painter ? `/search?painter=${encodeURIComponent(figure.painter)}` : undefined} />
+            <InfoRow
+              label="角色"
+              value={figure.character_name}
+              searchKey="character"
+              extraParams={figure.franchise_name ? { franchise: figure.franchise_name } : undefined}
+            />
+            <InfoRow label="作品" value={figure.franchise_name} searchKey="franchise" />
+            <InfoRow label="原型師" value={figure.sculptor} searchKey="sculptor" />
+            <InfoRow label="塗裝師" value={figure.painter} searchKey="painter" />
+            <InfoRow label="原畫" value={figure.illustrator} searchKey="illustrator" />
             <InfoRow label="素材" value={figure.material} />
             <InfoRow label="尺寸" value={figure.dimensions} />
             <InfoRow label="類型" value={figure.figure_type} />
@@ -480,6 +594,19 @@ export default async function FigureDetailPage({
             <InfoRow label="發售年份" value={figure.release_year?.toString()} />
             <InfoRow label="發售日期" value={figure.release_date} />
             <InfoRow label="再版日期" value={figure.reissue_dates} />
+            {figure.official_url && (
+              <div className="flex items-start gap-2 py-1">
+                <span className="w-16 shrink-0 text-xs text-[#6e7681]">官方頁面</span>
+                <a
+                  href={figure.official_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-w-0 break-words text-sm text-[#C4A265] hover:underline"
+                >
+                  前往 ↗
+                </a>
+              </div>
+            )}
           </div>
         </div>
       </section>

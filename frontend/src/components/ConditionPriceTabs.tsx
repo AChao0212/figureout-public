@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { formatCurrency } from "@/lib/currency";
 
 interface ConditionPrice {
   condition: string;
@@ -12,15 +13,9 @@ interface ConditionPrice {
   sample_count: number;
 }
 
-const EXCHANGE_RATES: Record<string, number> = { USD: 1, TWD: 32.2, JPY: 149.5, CNY: 7.25 };
-function fp(usd: number, currency: string): string {
-  const sym: Record<string, string> = { TWD: "NT$", JPY: "\u00a5", USD: "$", CNY: "\u00a5" };
-  const rate = EXCHANGE_RATES[currency] || 1;
-  const v = usd * rate;
-  const s = sym[currency] || "$";
-  if (currency === "JPY") return `${s}${Math.round(v).toLocaleString()}`;
-  return `${s}${v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-}
+// Prices are already in `currency` (backend converts via /figures/{id}?currency=XXX).
+// `formatCurrency` only adds the symbol, no rate math.
+const fp = formatCurrency;
 
 export default function ConditionPriceTabs({ prices, currency }: { prices: ConditionPrice[]; currency: string }) {
   const [active, setActive] = useState(prices[0]?.condition || "sealed");

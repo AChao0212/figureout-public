@@ -6,6 +6,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   type ReactNode,
 } from "react";
 
@@ -146,13 +147,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  // Track how many consecutive refresh failures we've had so components
+  // polling refreshUser() don't trigger an infinite retry loop when the
+  // backend is returning 500 / unreachable.
+  const refreshFailuresRef = useRef(0);
   const refreshUser = useCallback(async () => {
     if (!token) return;
+    if (refreshFailuresRef.current >= 3) return;
     try {
       const profile = await fetchProfile(token);
       setUser(profile);
-    } catch {
-      // Silently fail — keep existing user state
+      refreshFailuresRef.current = 0;
+    } catch (err: any) {
+      // AuthError → token bad; logout() was already handled elsewhere.
+      // For transient errors, bump the counter and stop retrying after 3.
+      refreshFailuresRef.current += 1;
     }
   }, [token]);
 

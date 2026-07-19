@@ -62,8 +62,10 @@ export default async function SearchPage({
   searchParams,
 }: {
   searchParams: Promise<{
-    q?: string; currency?: string; scale?: string; manufacturer?: string; character?: string;
-    sculptor?: string; painter?: string; figure_type?: string;
+    q?: string; currency?: string; scale?: string; manufacturer?: string;
+    series?: string; franchise?: string;
+    character?: string; sculptor?: string; painter?: string;
+    illustrator?: string; figure_type?: string;
     sort?: string; page?: string;
   }>;
 }) {
@@ -72,29 +74,36 @@ export default async function SearchPage({
   const currency = sp.currency || "TWD";
   const scale = sp.scale || "";
   const manufacturer = sp.manufacturer || "";
+  const series = sp.series || "";
+  const franchise = sp.franchise || "";
   const sculptor = sp.sculptor || "";
   const character = (sp as any).character || "";
   const painter = sp.painter || "";
+  const illustrator = sp.illustrator || "";
   const figure_type = sp.figure_type || "";
   const sort = sp.sort || "";
   const page = Math.max(1, parseInt(sp.page || "1"));
 
-  const hasQuery = q || scale || manufacturer || sculptor || painter || figure_type || character;
+  const hasQuery = q || scale || manufacturer || series || franchise || sculptor || painter || illustrator || figure_type || character;
   const skip = (page - 1) * PAGE_SIZE;
 
   const { figures, total } = hasQuery
-    ? await searchFigures({ q, scale, manufacturer, sculptor, painter, figure_type, character, sort, skip: String(skip), limit: String(PAGE_SIZE) })
+    ? await searchFigures({ q, scale, manufacturer, series, franchise, sculptor, painter, illustrator, figure_type, character, sort, skip: String(skip), limit: String(PAGE_SIZE), currency })
     : { figures: [], total: 0 };
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
-  const baseParams: Record<string, string> = { q, scale, manufacturer, sculptor, painter, figure_type, character, sort };
+  const baseParams: Record<string, string> = { q, scale, manufacturer, series, franchise, sculptor, painter, illustrator, figure_type, character, sort };
 
   const filterLabels: string[] = [];
   if (q) filterLabels.push(q);
   if (scale) filterLabels.push(`比例: ${scale}`);
+  if (series) filterLabels.push(`系列: ${series}`);
+  if (franchise) filterLabels.push(`作品: ${franchise}`);
+  if (character) filterLabels.push(`角色: ${character}`);
   if (manufacturer) filterLabels.push(`製造商: ${manufacturer}`);
   if (sculptor) filterLabels.push(`原型師: ${sculptor}`);
   if (painter) filterLabels.push(`塗裝: ${painter}`);
+  if (illustrator) filterLabels.push(`原畫: ${illustrator}`);
   if (figure_type) filterLabels.push(`類型: ${figure_type}`);
 
   const sortOptions = [

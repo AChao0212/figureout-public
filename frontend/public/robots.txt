@@ -1,10 +1,13 @@
 User-agent: *
 Allow: /
+# /admin and /api stay blocked — those are auth-gated and shouldn't be crawled at all.
 Disallow: /admin
 Disallow: /api/
-Disallow: /search
-Disallow: /watchlist
-Disallow: /login
+# /search, /watchlist, /login intentionally NOT blocked here. They each emit a
+# `robots: noindex` meta tag, but blocking via robots.txt would prevent Googlebot
+# from ever crawling them to *see* the noindex, leaving previously-indexed query
+# variants stuck in the index forever (the classic robots-txt-vs-noindex
+# anti-pattern). Let Google crawl, see the noindex, and drop them.
 
 User-agent: Googlebot
 Crawl-delay: 2

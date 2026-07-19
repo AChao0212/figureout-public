@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useColorMode } from "@/components/ColorModeContext";
+import { formatCurrency } from "@/lib/currency";
 
 interface TrendingFigure {
   id: number;
@@ -19,13 +20,7 @@ interface TrendingFigure {
   franchise_name?: string;
 }
 
-const EXCHANGE_RATES: Record<string, number> = { USD: 1, TWD: 32.2, JPY: 149.5, CNY: 7.25 };
 
-function formatPrice(priceUsd: number, currency: string): string {
-  const rate = EXCHANGE_RATES[currency] || 1;
-  const symbols: Record<string, string> = { TWD: "$", JPY: "¥", USD: "$", CNY: "¥" };
-  return `${symbols[currency] || "$"}${Math.round(priceUsd * rate).toLocaleString()}`;
-}
 
 function TypingTitle({ texts, className }: { texts: string[]; className?: string }) {
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -87,10 +82,14 @@ export default function TrendingPage() {
   const [isFallback, setIsFallback] = useState(false);
   const { upColor, downColor } = useColorMode();
 
+  // Backend converts prices to the requested display currency when given `?currency=`,
+  // so the frontend just formats them with the right symbol.
+  const fmt = (price: number, currency: string) => formatCurrency(price, currency);
+
   const [bestTitles, setBestTitles] = useState<string[]>(DEFAULT_BEST_TITLES);
   const [worstTitles, setWorstTitles] = useState<string[]>(DEFAULT_WORST_TITLES);
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   // Fetch custom titles from API
   useEffect(() => {
@@ -111,7 +110,7 @@ export default function TrendingPage() {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`${apiUrl}/browse/trending?period=${period}&mode=${mode}&limit=20`)
+    fetch(`${apiUrl}/browse/trending?period=${period}&mode=${mode}&limit=20&currency=${encodeURIComponent(currency)}`)
       .then((r) => r.json())
       .then((data) => {
         if (data && data.items) {
@@ -124,7 +123,7 @@ export default function TrendingPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [period, mode, apiUrl]);
+  }, [period, mode, apiUrl, currency]);
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
@@ -228,10 +227,10 @@ export default function TrendingPage() {
                       </Link>
                     </td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right text-xs font-medium text-[#c9d1d9] sm:px-3 sm:text-sm">
-                      {fig.current_median_price ? formatPrice(fig.current_median_price, currency) : "--"}
+                      {fig.current_median_price ? fmt(fig.current_median_price, currency) : "--"}
                     </td>
                     <td className="hidden whitespace-nowrap px-2 py-2.5 text-right text-xs text-[#8b949e] sm:table-cell sm:px-3 sm:text-sm">
-                      {fig.previous_price ? formatPrice(fig.previous_price, currency) : "--"}
+                      {fig.previous_price ? fmt(fig.previous_price, currency) : "--"}
                     </td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right sm:px-3">
                       <span style={{ color }} className="text-xs font-bold sm:text-sm">

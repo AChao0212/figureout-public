@@ -3,10 +3,22 @@
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
+
+
+def _parse_iso8601(s: str | None) -> datetime | None:
+    """Parse Yahoo's `2026-05-14T21:04:33+09:00` ISO format. Returns None if missing
+    or malformed so callers can fall back to scraped_at."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +135,11 @@ class YahooAuctionScraper:
                     # Condition
                     condition = detect_condition(title)
 
+                    # endTime is the auction's closing timestamp — for closedsearch
+                    # results this IS the sold_at. Keep as None if missing rather
+                    # than substituting NOW(); main.py falls back to scraped_at.
+                    sold_at = _parse_iso8601(item.get("endTime"))
+
                     results.append({
                         "title": title,
                         "price_jpy": int(price_jpy),
@@ -132,6 +149,7 @@ class YahooAuctionScraper:
                         "condition": condition,
                         "is_sold": True,
                         "bids": bids,
+                        "sold_at": sold_at,
                     })
                 except Exception:
                     continue

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { format, parseISO } from "date-fns";
+import { formatCurrency } from "@/lib/currency";
 
 interface Listing {
   id: number;
@@ -9,7 +10,7 @@ interface Listing {
   title: string;
   price: number;
   currency: string;
-  price_usd?: number;
+  price_canonical?: number;
   condition: string;
   is_sold: boolean;
   sold_at?: string;
@@ -24,21 +25,11 @@ interface ListingsTableProps {
   figureId?: number;
 }
 
-const EXCHANGE_RATES: Record<string, number> = { USD: 1, TWD: 32.2, JPY: 149.5, CNY: 7.25 };
-
-function convertToDisplay(listing: Listing, displayCurrency: string): string {
-  const sym: Record<string, string> = { TWD: "NT$", JPY: "\u00a5", USD: "$", CNY: "\u00a5" };
-  const symbol = sym[displayCurrency] || "$";
-
-  let usd = listing.price_usd;
-  if (!usd) {
-    const fromRate = EXCHANGE_RATES[listing.currency] || 1;
-    usd = listing.price / fromRate;
-  }
-  const converted = usd * (EXCHANGE_RATES[displayCurrency] || 1);
-
-  if (displayCurrency === "JPY") return `${symbol}${Math.round(converted).toLocaleString()}`;
-  return `${symbol}${converted.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+/** Show each listing in its ORIGINAL currency (no conversion). Mixed-currency tables
+ * make the source data more legible \u2014 a JPY Yahoo auction reads as \u00a5XX,XXX, a TWD
+ * social report reads as NT$X,XXX. Aggregates above the table already handle conversion. */
+function listingPrice(listing: Listing): string {
+  return formatCurrency(listing.price, listing.currency);
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -146,7 +137,7 @@ function ReportButton({ listingId, figureId }: { listingId: number; figureId?: n
   );
 }
 
-export default function ListingsTable({ listings, currency = "TWD", figureId }: ListingsTableProps) {
+export default function ListingsTable({ listings, figureId }: ListingsTableProps) {
   if (!listings || listings.length === 0) {
     return (
       <div className="rounded-lg border border-[#30363d] bg-[#0d1117] p-6 text-center text-sm text-[#6e7681]">
@@ -194,7 +185,7 @@ export default function ListingsTable({ listings, currency = "TWD", figureId }: 
                     {listing.notes && <p className="mt-0.5 truncate text-[10px] text-[#6e7681]">{listing.notes}</p>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 font-mono text-sm text-[#e6edf3]">
-                    {convertToDisplay(listing, currency)}
+                    {listingPrice(listing)}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-xs">
                     <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${
@@ -238,7 +229,7 @@ export default function ListingsTable({ listings, currency = "TWD", figureId }: 
               {listing.notes && <p className="mt-0.5 truncate text-[10px] text-[#6e7681]">{listing.notes}</p>}
               <div className="flex shrink-0 items-center gap-2">
                 <p className="font-mono text-sm font-semibold text-[#e6edf3]">
-                  {convertToDisplay(listing, currency)}
+                  {listingPrice(listing)}
                 </p>
                 <ReportButton listingId={listing.id} figureId={figureId} />
               </div>

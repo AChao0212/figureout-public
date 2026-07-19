@@ -8,7 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import Character, ErrorReport, Figure, FigureSubmission, Franchise, Listing, PriceSnapshot, UserReport
 from routers.figures import recalculate_figure_snapshots
-from schemas import ErrorReportOut, FigureSubmissionOut
+from schemas import (
+    AdminFigureUpdate,
+    AdminFigureBatchUpdate,
+    AdminFigureBatchUpdateCharacter,
+    AdminFigureBatchUpdateFranchise,
+    AdminListingUpdate,
+    AdminListingCreate,
+    AdminSubmissionUpdate,
+    ErrorReportOut,
+    FigureSubmissionOut,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_editor)])
 
@@ -59,9 +69,11 @@ async def list_submissions(
             "material": s.material,
             "sculptor": s.sculptor,
             "painter": s.painter,
+            "illustrator": s.illustrator,
             "dimensions": s.dimensions,
             "gender": s.gender,
             "release_date": s.release_date,
+            "official_url": s.official_url,
             "status": s.status,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "reviewed_at": s.reviewed_at.isoformat() if s.reviewed_at else None,
@@ -118,6 +130,7 @@ async def approve_submission(
         placeholder_fran = Franchise(name=sub.character_name)
         db.add(placeholder_fran)
         await db.flush()
+        franchise_id = placeholder_fran.id  # so Figure.franchise_id below gets the right value
         character = Character(name=sub.character_name, franchise_id=placeholder_fran.id)
         db.add(character)
         await db.flush()
@@ -144,6 +157,7 @@ async def approve_submission(
         name=sub.name,
         original_name=_e2n(sub.original_name),
         character_id=character_id,
+        franchise_id=franchise_id,  # mirror character's franchise so figure.franchise_id is populated for new approvals
         manufacturer=sub.manufacturer,
         version_name=_e2n(sub.version_name),
         series=_e2n(sub.series),
@@ -157,10 +171,13 @@ async def approve_submission(
         material=sub.material,
         sculptor=sub.sculptor,
         painter=sub.painter,
+        illustrator=sub.illustrator,
         dimensions=sub.dimensions,
         gender=sub.gender,
         release_date=sub.release_date,
         release_year=release_year,
+        hpoi_link=sub.hpoi_link,
+        official_url=sub.official_url,
     )
     db.add(new_figure)
 
@@ -356,6 +373,50 @@ async def list_price_reports(
     return {"items": items, "total": total}
 
 
+# ── Scraper Health ──────────────────────────────────────────────────
+
+@router.get("/scraper-health")
+async def get_scraper_health(db: AsyncSession = Depends(get_db)):
+    """Per-source ingestion health so silent scraper outages are visible.
+
+    Returns one row per `listings.source` with: total count, last scrape time,
+    counts in the trailing 24h and 7d windows, and the count of suspicious
+    flags in the last 7d (proxy for matching quality)."""
+    from sqlalchemy import text as sql_text
+
+    rows = (await db.execute(sql_text("""
+        SELECT
+          l.source,
+          COUNT(*) AS total,
+          MAX(l.scraped_at) AS last_scraped_at,
+          COUNT(*) FILTER (WHERE l.scraped_at >= NOW() - INTERVAL '24 hours') AS last_24h,
+          COUNT(*) FILTER (WHERE l.scraped_at >= NOW() - INTERVAL '7 days') AS last_7d
+        FROM listings l
+        GROUP BY l.source
+        ORDER BY last_scraped_at DESC NULLS LAST
+    """))).all()
+
+    suspicious_7d = (await db.execute(sql_text("""
+        SELECT COUNT(*) FROM error_reports
+        WHERE report_type = 'suspicious_listing'
+          AND created_at >= NOW() - INTERVAL '7 days'
+    """))).scalar() or 0
+
+    return {
+        "sources": [
+            {
+                "source": r[0],
+                "total": int(r[1] or 0),
+                "last_scraped_at": r[2].isoformat() if r[2] else None,
+                "last_24h": int(r[3] or 0),
+                "last_7d": int(r[4] or 0),
+            }
+            for r in rows
+        ],
+        "suspicious_flags_7d": int(suspicious_7d),
+    }
+
+
 # ── Dashboard Stats ─────────────────────────────────────────────────
 
 @router.get("/dashboard")
@@ -417,7 +478,7 @@ async def get_dashboard_stats(
 @router.put("/submissions/{submission_id}")
 async def update_submission(
     submission_id: int,
-    body: dict,
+    body: AdminSubmissionUpdate,
     db: AsyncSession = Depends(get_db),
 ):
     """Update a submission fields (admin)."""
@@ -425,23 +486,11 @@ async def update_submission(
     sub = result.scalar_one_or_none()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    
-    allowed = ["name", "original_name", "character_name", "franchise_name", "manufacturer",
-               "version_name", "series", "scale", "jan_code", "image_url", "notes",
-               "retail_price", "retail_currency", "figure_type", "age_rating", "material", "sculptor",
-               "painter", "dimensions", "gender", "release_date"]
-    for key in allowed:
-        if key in body:
-            val = body[key]
-            # Type conversions
-            if key == "retail_price" and val is not None:
-                try:
-                    val = int(val) if val != "" else None
-                except (ValueError, TypeError):
-                    val = None
-            elif val == "":
-                val = None
-            setattr(sub, key, val)
+
+    for key, val in body.model_dump(exclude_unset=True).items():
+        if val == "":
+            val = None
+        setattr(sub, key, val)
     await db.commit()
     return {"status": "updated"}
 
@@ -486,10 +535,12 @@ async def admin_get_figure(
     db: AsyncSession = Depends(get_db),
 ):
     """Get full figure data for editing."""
+    # Franchise via figure.franchise_id (denormalised) so admin sees what they
+    # actually batch-edited rather than the character's intrinsic franchise.
     result = await db.execute(
         select(Figure, func.coalesce(Character.name, "").label("char_name"), Franchise.name.label("fran_name"))
         .outerjoin(Character, Figure.character_id == Character.id)
-        .outerjoin(Franchise, Character.franchise_id == Franchise.id)
+        .outerjoin(Franchise, Figure.franchise_id == Franchise.id)
         .where(Figure.id == figure_id)
     )
     row = result.first()
@@ -503,12 +554,14 @@ async def admin_get_figure(
         "manufacturer": fig.manufacturer, "scale": fig.scale,
         "retail_price": fig.retail_price, "retail_currency": fig.retail_currency or "JPY", "image_url": fig.image_url,
         "sculptor": fig.sculptor, "painter": fig.painter,
+        "illustrator": fig.illustrator,
         "dimensions": fig.dimensions, "material": fig.material,
         "gender": fig.gender, "figure_type": fig.figure_type,
         "age_rating": fig.age_rating, "release_date": fig.release_date,
         "reissue_dates": fig.reissue_dates, "character_id": fig.character_id,
         "source_id": fig.source_id, "series": fig.series,
         "version_name": fig.version_name, "jan_code": fig.jan_code,
+        "official_url": fig.official_url,
         "character_name": char_name, "franchise_name": fran_name,
     }
 
@@ -516,55 +569,168 @@ async def admin_get_figure(
 @router.put("/figures/{figure_id}")
 async def admin_update_figure(
     figure_id: int,
-    body: dict,
+    body: AdminFigureUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update figure fields (admin)."""
+    """Update figure fields (admin). Note: `jan_code` and `source_id` are NOT editable
+    to avoid breaking scraper idempotency; only set via approve/create flows."""
     result = await db.execute(select(Figure).where(Figure.id == figure_id))
     fig = result.scalar_one_or_none()
     if not fig:
         raise HTTPException(status_code=404, detail="Figure not found")
-    
-    # Handle character/franchise reassignment
-    if "character_name" in body and "franchise_name" in body:
-        franchise_name = body["franchise_name"]
-        character_name = body["character_name"]
-        if franchise_name and character_name:
-            # Find or create franchise
-            fr = await db.execute(select(Franchise).where(Franchise.name == franchise_name))
-            franchise = fr.scalar_one_or_none()
-            if not franchise:
-                franchise = Franchise(name=franchise_name)
-                db.add(franchise)
-                await db.flush()
-            # Find or create character
+
+    data = body.model_dump(exclude_unset=True)
+
+    # Handle character/franchise — now independent thanks to figure.franchise_id
+    # (denormalised). Editor can set franchise alone (rest stays put) or set
+    # character alone (we use the figure's current franchise for find-or-create).
+    character_name = data.pop("character_name", None)
+    franchise_name = data.pop("franchise_name", None)
+
+    # 1) Franchise: find-or-create + set fig.franchise_id directly. Independent
+    #    of character — this is the editor-meaningful field for display.
+    target_franchise = None
+    if franchise_name:
+        fr = await db.execute(select(Franchise).where(Franchise.name == franchise_name))
+        target_franchise = fr.scalar_one_or_none()
+        if not target_franchise:
+            target_franchise = Franchise(name=franchise_name)
+            db.add(target_franchise)
+            await db.flush()
+        fig.franchise_id = target_franchise.id
+
+    # 2) Character: find-or-create scoped to the *intended* franchise — which is
+    #    (a) the franchise the editor just set, or (b) the figure's existing
+    #    franchise. Skip if no franchise context available.
+    if character_name:
+        scope_franchise_id = (
+            target_franchise.id if target_franchise else fig.franchise_id
+        )
+        if scope_franchise_id is not None:
             ch = await db.execute(select(Character).where(
-                Character.name == character_name, Character.franchise_id == franchise.id
+                Character.name == character_name, Character.franchise_id == scope_franchise_id
             ))
             character = ch.scalar_one_or_none()
             if not character:
-                character = Character(name=character_name, franchise_id=franchise.id)
+                character = Character(name=character_name, franchise_id=scope_franchise_id)
                 db.add(character)
                 await db.flush()
             fig.character_id = character.id
 
-    allowed = ["name", "original_name", "manufacturer", "scale", "retail_price",
-               "retail_currency", "image_url", "sculptor", "painter", "dimensions",
-               "material", "gender", "figure_type", "age_rating", "release_date",
-               "reissue_dates", "series", "version_name", "jan_code", "source_id"]
-    for key in allowed:
-        if key in body:
-            val = body[key]
-            if key == "retail_price" and val is not None:
-                try:
-                    val = int(val) if val != "" else None
-                except (ValueError, TypeError):
-                    val = None
-            elif val == "":
-                val = None
-            setattr(fig, key, val)
+    # Apply the remaining scalar fields. Pydantic already validated types/lengths/URL scheme.
+    for key, val in data.items():
+        if val == "":
+            val = None
+        setattr(fig, key, val)
     await db.commit()
     return {"status": "updated"}
+
+
+@router.post("/figures/batch-update")
+async def admin_batch_update_figures(
+    body: AdminFigureBatchUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Set ONE whitelisted field to the same value across many figures at once
+    (admin 公仔管理 batch edit). Editor-level, same as single-figure edit. The
+    field is constrained to a safe whitelist by AdminFigureBatchUpdate; the
+    value is re-validated against the real per-field rule (e.g. scale max 50)."""
+    # Reuse the exact per-field constraint from the single-edit schema.
+    try:
+        AdminFigureUpdate.model_validate({body.field: body.value})
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"invalid value for {body.field}: {e}")
+
+    value = body.value if body.value not in (None, "") else None
+    from sqlalchemy import update as sql_update
+    result = await db.execute(
+        sql_update(Figure).where(Figure.id.in_(body.ids)).values({body.field: value})
+    )
+    await db.commit()
+    return {"updated": result.rowcount}
+
+
+@router.post("/figures/batch-update-franchise")
+async def admin_batch_update_franchise(
+    body: AdminFigureBatchUpdateFranchise,
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch-set the franchise of N figures (independent of character).
+    Find-or-create the named franchise, then UPDATE figures.franchise_id.
+    Does NOT touch character_id — that's a separate batch endpoint."""
+    from sqlalchemy import update as sql_update
+    fr_res = await db.execute(select(Franchise).where(Franchise.name == body.franchise_name))
+    franchise = fr_res.scalar_one_or_none()
+    franchise_created = False
+    if not franchise:
+        franchise = Franchise(name=body.franchise_name)
+        db.add(franchise)
+        await db.flush()
+        franchise_created = True
+    upd = await db.execute(
+        sql_update(Figure).where(Figure.id.in_(body.ids)).values(franchise_id=franchise.id)
+    )
+    await db.commit()
+    return {
+        "updated": upd.rowcount,
+        "franchise_id": franchise.id,
+        "franchise_created": franchise_created,
+    }
+
+
+@router.post("/figures/batch-update-character")
+async def admin_batch_update_character(
+    body: AdminFigureBatchUpdateCharacter,
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch-set the character of N figures (independent of franchise).
+    For each figure, the character is find-or-created scoped to the figure's
+    CURRENT franchise (figure.franchise_id). Figures with no franchise are
+    skipped — set their franchise first via /batch-update-franchise.
+
+    Why per-figure scoping: a character belongs to exactly one franchise in
+    our schema, so two figures with different franchises can't share the same
+    character entity. By scoping to each figure's existing franchise we get
+    the right character (existing or created) under the right parent."""
+    from sqlalchemy import update as sql_update
+    figs_res = await db.execute(
+        select(Figure.id, Figure.franchise_id).where(Figure.id.in_(body.ids))
+    )
+    rows = figs_res.all()
+    # Bucket figures by their franchise_id so we look up / create characters once per franchise.
+    by_franchise: dict[int, list[int]] = {}
+    skipped: list[int] = []
+    for fid, fr_id in rows:
+        if fr_id is None:
+            skipped.append(fid)
+        else:
+            by_franchise.setdefault(fr_id, []).append(fid)
+
+    updated = 0
+    characters_created = 0
+    for fr_id, fids in by_franchise.items():
+        ch_res = await db.execute(
+            select(Character).where(
+                Character.name == body.character_name,
+                Character.franchise_id == fr_id,
+            )
+        )
+        character = ch_res.scalar_one_or_none()
+        if not character:
+            character = Character(name=body.character_name, franchise_id=fr_id)
+            db.add(character)
+            await db.flush()
+            characters_created += 1
+        res = await db.execute(
+            sql_update(Figure).where(Figure.id.in_(fids)).values(character_id=character.id)
+        )
+        updated += res.rowcount
+    await db.commit()
+    return {
+        "updated": updated,
+        "skipped_no_franchise": len(skipped),
+        "characters_created": characters_created,
+    }
 
 
 @router.delete("/figures/{figure_id}")
@@ -573,17 +739,42 @@ async def admin_delete_figure(
     db: AsyncSession = Depends(get_db),
     _admin = Depends(require_admin),
 ):
-    """Delete a figure and its listings/snapshots (admin)."""
+    """Delete a figure and ALL its dependent rows (admin).
+    Explicitly deletes from every table that references figures.id so the final
+    figure DELETE doesn't fail on RESTRICT foreign keys."""
     result = await db.execute(select(Figure).where(Figure.id == figure_id))
     fig = result.scalar_one_or_none()
     if not fig:
         raise HTTPException(status_code=404, detail="Figure not found")
-    
-    await db.execute(select(Listing).where(Listing.figure_id == figure_id))
-    from sqlalchemy import delete
+
+    from sqlalchemy import delete, text as sql_text
+    # Core price data
     await db.execute(delete(Listing).where(Listing.figure_id == figure_id))
     await db.execute(delete(PriceSnapshot).where(PriceSnapshot.figure_id == figure_id))
     await db.execute(delete(UserReport).where(UserReport.figure_id == figure_id))
+    # Engagement/user data — tables may or may not exist; wrap each in a
+    # SAVEPOINT so a missing-table/column error rolls back only that one
+    # statement, not the whole transaction. (Without the savepoint, the first
+    # failing DELETE poisons the entire transaction and the final db.commit
+    # of the figure delete blows up with "transaction is aborted".)
+    import logging as _log
+    for stmt, label in [
+        ("DELETE FROM user_watchlist WHERE figure_id = :fid", "watchlist"),
+        ("DELETE FROM user_purchases WHERE figure_id = :fid", "purchases"),
+        ("DELETE FROM figure_notes WHERE figure_id = :fid", "notes"),
+        ("DELETE FROM figure_note_reports WHERE note_id IN (SELECT id FROM figure_notes WHERE figure_id = :fid)", "note_reports"),
+        ("DELETE FROM figure_ratings WHERE figure_id = :fid", "ratings"),
+        ("DELETE FROM error_reports WHERE figure_id = :fid", "error_reports"),
+        ("DELETE FROM orders WHERE figure_id = :fid", "orders"),
+        ("DELETE FROM transactions WHERE figure_id = :fid", "transactions"),
+        ("DELETE FROM page_views WHERE figure_id = :fid", "page_views"),
+        ("DELETE FROM figure_submissions WHERE figure_id = :fid", "submissions"),
+    ]:
+        try:
+            async with db.begin_nested():
+                await db.execute(sql_text(stmt), {"fid": figure_id})
+        except Exception as e:
+            _log.getLogger(__name__).info("admin_delete_figure: skipping %s (%s)", label, e)
     await db.delete(fig)
     await db.commit()
     return {"status": "deleted"}
@@ -591,29 +782,27 @@ async def admin_delete_figure(
 
 @router.post("/figures")
 async def admin_create_figure(
-    body: dict,
+    body: AdminFigureUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new figure (admin)."""
-    fig = Figure(
-        name=body.get("name", ""),
-        original_name=body.get("original_name"),
-        manufacturer=body.get("manufacturer"),
-        scale=body.get("scale"),
-        retail_price=body.get("retail_price"),
-        image_url=body.get("image_url"),
-        sculptor=body.get("sculptor"),
-        painter=body.get("painter"),
-        dimensions=body.get("dimensions"),
-        material=body.get("material"),
-        gender=body.get("gender"),
-        figure_type=body.get("figure_type"),
-        age_rating=body.get("age_rating"),
-        release_date=body.get("release_date"),
-        character_id=body.get("character_id"),
-        series=body.get("series"),
-    )
+    """Create a new figure (admin). Uses the same validated model as update."""
+    data = body.model_dump(exclude_unset=True)
+    if not data.get("name"):
+        raise HTTPException(status_code=422, detail="name is required")
+    # character_name/franchise_name not supported in create; use update after
+    data.pop("character_name", None)
+    data.pop("franchise_name", None)
+    fig = Figure(**{k: v for k, v in data.items() if v != ""})
     db.add(fig)
+    await db.flush()
+    # If character_id was provided, mirror its franchise onto figure.franchise_id
+    # so the denormalised column is consistent from row one (avoids NULL franchise
+    # display on freshly-created figures).
+    if fig.character_id and fig.franchise_id is None:
+        ch_res = await db.execute(select(Character.franchise_id).where(Character.id == fig.character_id))
+        ch_fr = ch_res.scalar_one_or_none()
+        if ch_fr:
+            fig.franchise_id = ch_fr
     await db.commit()
     await db.refresh(fig)
     return {"status": "created", "id": fig.id}
@@ -658,16 +847,24 @@ async def admin_delete_price_report(
         assoc_listing = listing_result2.scalars().first()
     if assoc_listing:
         await db.delete(assoc_listing)
-    
+
     # Also delete explicitly requested listing
     if listing_id is not None and (not assoc_listing or assoc_listing.id != listing_id):
         extra_listing = await db.execute(select(Listing).where(Listing.id == listing_id))
         extra = extra_listing.scalar_one_or_none()
         if extra:
             await db.delete(extra)
-    
+
+    figure_id = report.figure_id
     await db.delete(report)
     await db.commit()
+    # Recalculate snapshots so the removed report stops affecting price stats
+    try:
+        await recalculate_figure_snapshots(figure_id, db)
+        await db.commit()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Snapshot recalc failed for figure_id=%s", figure_id)
     return {"status": "deleted"}
 
 
@@ -722,30 +919,43 @@ async def admin_delete_listing(
 
 @router.post("/listings")
 async def admin_create_listing(
-    body: dict,
+    body: AdminListingCreate,
     db: AsyncSession = Depends(get_db),
 ):
     """Manually create a listing (admin)."""
-    RATES_TO_USD = {"JPY": 1/149.5, "TWD": 1/32.2, "USD": 1, "CNY": 1/7.25}
-    currency = body.get("currency", "JPY")
-    price = float(body.get("price", 0))
-    price_usd = price * RATES_TO_USD.get(currency, 1)
-    
+    # Verify figure exists
+    target = await db.execute(select(Figure.id).where(Figure.id == body.figure_id))
+    if not target.scalar_one_or_none():
+        raise HTTPException(status_code=422, detail="Target figure_id does not exist")
+
+    # `price_canonical` column is a legacy name; contents are the canonical TWD value.
+    from currency import get_live_rates, to_display
+    rates = await get_live_rates()
+    canonical_twd = to_display(body.price, body.currency, "TWD", rates) or 0.0
+
     listing = Listing(
-        figure_id=body.get("figure_id"),
-        source=body.get("source", "manual"),
-        source_id=body.get("source_id"),
-        title=body.get("title", ""),
-        price=price,
-        currency=currency,
-        price_usd=round(price_usd, 2),
-        condition=body.get("condition", "used"),
-        is_sold=body.get("is_sold", True),
-        url=body.get("url"),
-        image_url=body.get("image_url"),
+        figure_id=body.figure_id,
+        source=body.source or "manual",
+        source_id=body.source_id,
+        title=body.title or "",
+        price=body.price,
+        currency=body.currency,
+        price_canonical=round(canonical_twd, 2),
+        condition=body.condition or "used",
+        is_sold=body.is_sold,
+        url=body.url,
+        image_url=body.image_url,
+        notes=body.notes,
     )
     db.add(listing)
     await db.commit()
+    # Keep snapshots in sync
+    try:
+        await recalculate_figure_snapshots(body.figure_id, db)
+        await db.commit()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Snapshot recalc failed for figure_id=%s", body.figure_id)
     return {"status": "created", "id": listing.id}
 
 
@@ -756,7 +966,9 @@ async def admin_create_listing(
 async def admin_list_figures(
     q: str = Query("", description="Search by name/manufacturer"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
+    # cap bumped 100→200 so the 公仔管理 multi-select can fit a whole product
+    # line on one page (frontend asks for 150). 200 is also the batch-update id cap.
+    limit: int = Query(20, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
     """Search/list all figures with pagination."""
@@ -843,7 +1055,7 @@ async def admin_figure_listings(
             "title": l.title,
             "price": l.price,
             "currency": l.currency,
-            "price_usd": l.price_usd,
+            "price_canonical": l.price_canonical,
             "condition": l.condition,
             "is_sold": l.is_sold,
             "url": l.url,
@@ -862,32 +1074,60 @@ async def admin_figure_listings(
 @router.put("/listings/{listing_id}")
 async def admin_update_listing(
     listing_id: int,
-    body: dict,
+    body: AdminListingUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update listing fields (admin)."""
+    """Update listing fields (admin). Recalculates snapshots for any affected figures."""
     result = await db.execute(select(Listing).where(Listing.id == listing_id))
     listing = result.scalar_one_or_none()
     if not listing:
         raise HTTPException(status_code=404, detail="Listing not found")
 
-    allowed = ["figure_id", "source", "source_id", "title", "price", "currency",
-               "price_usd", "condition", "is_sold", "url", "image_url", "sold_at"]
-    for key in allowed:
-        if key in body:
-            val = body[key]
-            if key == "sold_at" and val:
-                try:
-                    from datetime import datetime as _dt
-                    val = _dt.fromisoformat(val) if isinstance(val, str) else val
-                except (ValueError, TypeError):
-                    val = None
-            elif key == "price" and val is not None:
-                try:
-                    val = int(val) if val != "" else None
-                except (ValueError, TypeError):
-                    val = None
-            setattr(listing, key, val)
+    old_figure_id = listing.figure_id
+    data = body.model_dump(exclude_unset=True)
+
+    # If figure_id is changing, confirm the target exists
+    new_figure_id = data.get("figure_id")
+    if new_figure_id is not None and new_figure_id != old_figure_id:
+        target = await db.execute(select(Figure.id).where(Figure.id == new_figure_id))
+        if not target.scalar_one_or_none():
+            raise HTTPException(status_code=422, detail="Target figure_id does not exist")
+
+    for key, val in data.items():
+        if key == "sold_at" and val:
+            try:
+                from datetime import datetime as _dt
+                val = _dt.fromisoformat(val) if isinstance(val, str) else val
+            except (ValueError, TypeError):
+                val = None
+        elif val == "":
+            val = None
+        setattr(listing, key, val)
+
+    # Re-derive the canonical value whenever price or currency changed, otherwise
+    # the cached value drifts and snapshot recalc reads a stale figure.
+    # (The column name "price_canonical" is legacy; contents are TWD.)
+    if "price" in data or "currency" in data:
+        from currency import get_live_rates, to_display
+        rates = await get_live_rates()
+        new_twd = to_display(listing.price, listing.currency, "TWD", rates)
+        listing.price_canonical = round(new_twd, 2) if new_twd is not None else None
+
+    await db.commit()
+
+    # Recalculate snapshots for the affected figure(s)
+    affected = {old_figure_id}
+    if new_figure_id is not None and new_figure_id != old_figure_id:
+        affected.add(new_figure_id)
+    import logging
+    _log = logging.getLogger(__name__)
+    for fid in affected:
+        if fid is None:
+            continue
+        try:
+            await recalculate_figure_snapshots(fid, db)
+        except Exception:
+            _log.exception("Snapshot recalc failed for figure_id=%s", fid)
     await db.commit()
     return {"status": "updated"}
 
@@ -897,8 +1137,11 @@ async def admin_update_listing(
 # Site Config
 # ---------------------------------------------------------------------------
 @router.get("/config")
-async def get_site_config(db: AsyncSession = Depends(get_db)):
-    """Get all site config entries."""
+async def get_site_config(
+    db: AsyncSession = Depends(get_db),
+    _admin = Depends(require_admin),
+):
+    """Get all site config entries. Admin-only to avoid leaking any secret-shaped values."""
     from sqlalchemy import text as sql_text
     result = await db.execute(sql_text("SELECT key, value FROM site_config ORDER BY key"))
     return {row.key: row.value for row in result.all()}
@@ -965,3 +1208,170 @@ async def admin_delete_note(
     await db.execute(sql_text("DELETE FROM figure_notes WHERE id = :nid"), {"nid": note_id})
     await db.commit()
     return {"status": "deleted"}
+
+
+# ── Franchise Management ─────────────────────────────────────────────
+
+@router.get("/franchises")
+async def list_franchises(
+    q: str = Query("", description="Search by name or name_zh"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """List franchises with figure counts, for admin rename UI."""
+    # figure_count = figures whose Figure.franchise_id = franchise.id (denormalised
+    # column, so editor batch-edits to a figure's franchise are reflected in the
+    # admin franchise list immediately).
+    fc_subq = (
+        select(Figure.franchise_id.label("franchise_id"), func.count(Figure.id).label("fc"))
+        .where(Figure.franchise_id.isnot(None))
+        .group_by(Figure.franchise_id)
+        .subquery()
+    )
+    stmt = (
+        select(Franchise, func.coalesce(fc_subq.c.fc, 0).label("figure_count"))
+        .outerjoin(fc_subq, Franchise.id == fc_subq.c.franchise_id)
+    )
+    count_stmt = select(func.count(Franchise.id))
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(or_(Franchise.name.ilike(like), Franchise.name_zh.ilike(like)))
+        count_stmt = count_stmt.where(or_(Franchise.name.ilike(like), Franchise.name_zh.ilike(like)))
+    stmt = stmt.order_by(func.coalesce(fc_subq.c.fc, 0).desc(), Franchise.name.asc()).offset(skip).limit(limit)
+
+    total = (await db.execute(count_stmt)).scalar() or 0
+    rows = (await db.execute(stmt)).all()
+    items = [
+        {
+            "id": fr.id,
+            "name": fr.name,
+            "name_zh": fr.name_zh,
+            "figure_count": int(figure_count),
+        }
+        for fr, figure_count in rows
+    ]
+    return {"items": items, "total": total}
+
+
+@router.put("/franchises/{franchise_id}")
+async def update_franchise(
+    franchise_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a franchise globally (affects all linked figures)."""
+    name = (body.get("name") or "").strip()
+    name_zh = body.get("name_zh")
+    if name_zh is not None:
+        name_zh = name_zh.strip() or None
+
+    if not name:
+        raise HTTPException(status_code=400, detail="名稱不可為空")
+    if len(name) > 300:
+        raise HTTPException(status_code=400, detail="名稱過長（最多 300 字元）")
+
+    result = await db.execute(select(Franchise).where(Franchise.id == franchise_id))
+    fr = result.scalar_one_or_none()
+    if not fr:
+        raise HTTPException(status_code=404, detail="Franchise not found")
+
+    # Check name collision (unique constraint)
+    if name != fr.name:
+        existing = await db.execute(
+            select(Franchise.id).where(Franchise.name == name, Franchise.id != franchise_id)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="此名稱已被其他作品使用")
+
+    fr.name = name
+    fr.name_zh = name_zh
+    await db.commit()
+    return {"status": "updated", "id": fr.id, "name": fr.name, "name_zh": fr.name_zh}
+
+
+# ── Character Management ─────────────────────────────────────────────
+
+@router.get("/characters")
+async def list_characters(
+    q: str = Query("", description="Search by name or name_zh"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """List characters with figure counts + franchise name."""
+    fc_subq = (
+        select(Figure.character_id, func.count(Figure.id).label("fc"))
+        .group_by(Figure.character_id)
+        .subquery()
+    )
+    stmt = (
+        select(Character, Franchise.name.label("franchise_name"), func.coalesce(fc_subq.c.fc, 0).label("figure_count"))
+        .outerjoin(Franchise, Character.franchise_id == Franchise.id)
+        .outerjoin(fc_subq, Character.id == fc_subq.c.character_id)
+    )
+    count_stmt = select(func.count(Character.id))
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(or_(Character.name.ilike(like), Character.name_zh.ilike(like)))
+        count_stmt = count_stmt.where(or_(Character.name.ilike(like), Character.name_zh.ilike(like)))
+    stmt = stmt.order_by(func.coalesce(fc_subq.c.fc, 0).desc(), Character.name.asc()).offset(skip).limit(limit)
+
+    total = (await db.execute(count_stmt)).scalar() or 0
+    rows = (await db.execute(stmt)).all()
+    items = [
+        {
+            "id": c.id,
+            "name": c.name,
+            "name_zh": c.name_zh,
+            "franchise_id": c.franchise_id,
+            "franchise_name": franchise_name,
+            "figure_count": int(figure_count),
+        }
+        for c, franchise_name, figure_count in rows
+    ]
+    return {"items": items, "total": total}
+
+
+@router.put("/characters/{character_id}")
+async def update_character(
+    character_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a character globally (affects all linked figures). Warns on name collision within same franchise."""
+    name = (body.get("name") or "").strip()
+    name_zh = body.get("name_zh")
+    if name_zh is not None:
+        name_zh = name_zh.strip() or None
+
+    if not name:
+        raise HTTPException(status_code=400, detail="名稱不可為空")
+    if len(name) > 300:
+        raise HTTPException(status_code=400, detail="名稱過長（最多 300 字元）")
+
+    result = await db.execute(select(Character).where(Character.id == character_id))
+    ch = result.scalar_one_or_none()
+    if not ch:
+        raise HTTPException(status_code=404, detail="Character not found")
+
+    # Soft warning if another character in same franchise already has this name
+    warning = None
+    if name != ch.name:
+        dup = await db.execute(
+            select(Character.id).where(
+                Character.name == name,
+                Character.franchise_id == ch.franchise_id,
+                Character.id != character_id,
+            )
+        )
+        if dup.scalar_one_or_none():
+            warning = "同作品中已有相同名稱的角色"
+
+    ch.name = name
+    ch.name_zh = name_zh
+    await db.commit()
+    result = {"status": "updated", "id": ch.id, "name": ch.name, "name_zh": ch.name_zh}
+    if warning:
+        result["warning"] = warning
+    return result

@@ -19,6 +19,7 @@ def _check_memory_rate_limit(ip: str, max_attempts: int = 5, window: int = 60) -
 from pydantic import BaseModel
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from schemas import UpdateMeIn
 
 from auth import (
     get_real_ip,
@@ -54,11 +55,29 @@ class WatchlistMergeIn(BaseModel):
 # ── Auth Endpoints ────────────────────────────────────────
 
 @router.post("/register")
-async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)):
+async def register(body: RegisterIn, request: Request, db: AsyncSession = Depends(get_db)):
+    # Rate-limit register by IP (5 per 15 minutes) to slow enumeration & spam.
+    ip = get_real_ip(request)
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(os.environ.get("REDIS_URL", "redis://redis:6379/0"))
+        key = f"register_attempts:{ip}"
+        attempts = await r.incr(key)
+        if attempts == 1:
+            await r.expire(key, 900)
+        await r.aclose()
+        if attempts > 5:
+            raise HTTPException(status_code=429, detail="嘗試太頻繁，請稍後再試")
+    except HTTPException:
+        raise
+    except Exception:
+        if _check_memory_rate_limit(f"reg:{ip}", max_attempts=5, window=900):
+            raise HTTPException(status_code=429, detail="嘗試太頻繁，請稍後再試")
+
     if not USERNAME_RE.match(body.username):
         raise HTTPException(status_code=400, detail="帳號只能使用英文、數字和底線，長度 3-30 字元")
-    if len(body.password) < 6:
-        raise HTTPException(status_code=400, detail="密碼至少 6 個字元")
+    if len(body.password) < 10:
+        raise HTTPException(status_code=400, detail="密碼至少 10 個字元")
 
     existing = await db.execute(
         select(User).where(func.lower(User.username) == body.username.lower())
@@ -140,11 +159,15 @@ async def get_me(user: User = Depends(get_current_user), db: AsyncSession = Depe
 
 
 @router.patch("/me")
-async def update_me(body: dict, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    display_name = body.get("display_name", "").strip()
-    if not display_name or len(display_name) > 50:
+async def update_me(
+    body: UpdateMeIn,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Pydantic already cleaned and bounded display_name in the schema
+    if body.display_name is None:
         raise HTTPException(status_code=400, detail="顯示名稱 1-50 字元")
-    user.display_name = display_name
+    user.display_name = body.display_name
     await db.commit()
     return {"id": user.id, "username": user.username, "display_name": user.display_name, "role": user.role}
 
@@ -177,29 +200,33 @@ async def get_rankings(db: AsyncSession = Depends(get_db)):
 
 @router.post("/apply-editor")
 async def apply_editor(body: dict, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """User applies to become editor. Creates an error_report for admin to review."""
+    """User applies to become editor. Creates an error_report with target_user_id=user.id
+    (stored in the structured column — the free-text description is display-only)."""
     if user.role in ("editor", "admin"):
         raise HTTPException(status_code=400, detail="你已經是編輯者或管理員")
 
-    # Check if already applied
+    # Check if already applied (by target_user_id — no regex parsing)
     existing = await db.execute(
-        text("SELECT id FROM error_reports WHERE report_type = 'editor_application' AND description LIKE :pattern AND status = 'pending'"),
-        {"pattern": f"User #{user.id} %"},
+        text("SELECT id FROM error_reports WHERE report_type = 'editor_application' AND target_user_id = :uid AND status = 'pending'"),
+        {"uid": user.id},
     )
     if existing.first():
         raise HTTPException(status_code=400, detail="你已經提交過申請，請等待審核")
 
     reason = (body.get("reason") or "").strip()[:200] or "未填寫"
 
-    # Count user's reports
     count = (await db.execute(
         text("SELECT COUNT(*) FROM user_reports WHERE user_id = :uid"),
         {"uid": user.id},
     )).scalar() or 0
 
     await db.execute(
-        text("INSERT INTO error_reports (report_type, description, status) VALUES ('editor_application', :desc, 'pending')"),
-        {"desc": f"User #{user.id} @{user.username} ({user.display_name}) 申請成為編輯者。目前貢獻: {count} 筆回報。理由: {reason}"},
+        text("""INSERT INTO error_reports (report_type, description, status, target_user_id)
+                VALUES ('editor_application', :desc, 'pending', :uid)"""),
+        {
+            "desc": f"User #{user.id} @{user.username} ({user.display_name}) 申請成為編輯者。目前貢獻: {count} 筆回報。理由: {reason}",
+            "uid": user.id,
+        },
     )
     await db.commit()
     return {"status": "ok", "message": "申請已送出，請等待管理員審核"}
@@ -214,9 +241,9 @@ async def approve_editor_application(
     db: AsyncSession = Depends(get_db),
 ):
     """Approve an editor application — promote user to editor."""
-    # Get the error report
+    # Get the error report via structured target_user_id (no free-text parsing)
     result = await db.execute(
-        text("SELECT id, description, status FROM error_reports WHERE id = :rid AND report_type = 'editor_application'"),
+        text("SELECT id, target_user_id, status, description FROM error_reports WHERE id = :rid AND report_type = 'editor_application'"),
         {"rid": report_id},
     )
     report = result.first()
@@ -225,13 +252,15 @@ async def approve_editor_application(
     if report[2] != "pending":
         raise HTTPException(status_code=400, detail="Application already processed")
 
-    # Extract user_id from description "User #123 ..."
-    import re
-    m = re.search(r"User #(\d+)", report[1])
-    if not m:
-        raise HTTPException(status_code=400, detail="Cannot parse user ID from application")
-    
-    target_id = int(m.group(1))
+    target_id = report[1]
+    if not target_id:
+        # Back-compat fallback for very old pre-migration rows
+        import re
+        m = re.search(r"User #(\d+)", report[3] or "")
+        if not m:
+            raise HTTPException(status_code=400, detail="Cannot determine applicant user id")
+        target_id = int(m.group(1))
+
     target = (await db.execute(select(User).where(User.id == target_id))).scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -348,17 +377,52 @@ async def remove_watchlist(figure_id: int, user: User = Depends(get_current_user
 
 @router.post("/watchlist/merge")
 async def merge_watchlist(body: WatchlistMergeIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    for item in body.items[:100]:
-        fid = item.get("id")
-        wtype = item.get("type", "interested")
-        if not fid or wtype not in ("interested", "owned"):
+    # Cap items per request to 50, and per-user watchlist total to 500
+    items = body.items[:50]
+
+    # Collect candidate figure_ids, validate they exist (one query)
+    candidate_ids = []
+    type_map: dict[int, str] = {}
+    for item in items:
+        try:
+            fid = int(item.get("id") or 0)
+        except (TypeError, ValueError):
             continue
+        wtype = item.get("type", "interested")
+        if fid <= 0 or wtype not in ("interested", "owned"):
+            continue
+        candidate_ids.append(fid)
+        type_map[fid] = wtype
+
+    if not candidate_ids:
+        return {"status": "ok", "merged": 0}
+
+    valid_result = await db.execute(
+        text("SELECT id FROM figures WHERE id = ANY(:ids)"),
+        {"ids": candidate_ids},
+    )
+    valid_ids = {row[0] for row in valid_result.all()}
+
+    current_count_result = await db.execute(
+        text("SELECT COUNT(*) FROM user_watchlist WHERE user_id = :uid"),
+        {"uid": user.id},
+    )
+    current_count = current_count_result.scalar() or 0
+    remaining_capacity = max(0, 500 - current_count)
+
+    merged = 0
+    for fid in candidate_ids:
+        if fid not in valid_ids:
+            continue
+        if merged >= remaining_capacity:
+            break
         await db.execute(text("""
             INSERT INTO user_watchlist (user_id, figure_id, type) VALUES (:uid, :fid, :type)
             ON CONFLICT (user_id, figure_id) DO NOTHING
-        """), {"uid": user.id, "fid": int(fid), "type": wtype})
+        """), {"uid": user.id, "fid": fid, "type": type_map[fid]})
+        merged += 1
     await db.commit()
-    return {"status": "ok", "merged": len(body.items)}
+    return {"status": "ok", "merged": merged}
 
 
 # ── Purchase Tracking (已購入) ────────────────────────────
@@ -369,7 +433,8 @@ class PurchaseIn(BaseModel):
     condition: str | None = None
     purchase_date: str | None = None  # ISO date
     platform: str | None = None  # public: where they bought it (FB, etc)
-    notes: str | None = None  # public report notes (links, etc)
+    notes: str | None = None  # PUBLIC: shown on figure detail page community listings
+    private_notes: str | None = None  # PRIVATE: stored on user_purchases, only visible to the user
     user_report_id: int | None = None  # Link to existing user_report
     create_report: bool = False  # If true, also create a user_report
 
@@ -425,12 +490,19 @@ async def list_my_reports_for_figure(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get user's own price reports for a specific figure (used in purchase modal)."""
+    """Get user's own price reports for a specific figure (used in purchase modal).
+    Joins to the listings row mirroring this report (`source_id = ur_{rid}_{fid}`)
+    to surface its sold_at — the user-entered transaction date, which is what
+    the modal should show next to the price (not the report's submission time)."""
     result = await db.execute(text("""
-        SELECT id, price, currency, condition, platform, notes, created_at
-        FROM user_reports
-        WHERE user_id = :uid AND figure_id = :fid
-        ORDER BY created_at DESC
+        SELECT r.id, r.price, r.currency, r.condition, r.platform, r.notes,
+               r.created_at, l.sold_at
+        FROM user_reports r
+        LEFT JOIN listings l
+          ON l.source = 'user_report'
+          AND l.source_id = 'ur_' || r.id || '_' || r.figure_id
+        WHERE r.user_id = :uid AND r.figure_id = :fid
+        ORDER BY r.created_at DESC
         LIMIT 20
     """), {"uid": user.id, "fid": figure_id})
     return [
@@ -442,9 +514,70 @@ async def list_my_reports_for_figure(
             "platform": r[4],
             "notes": r[5],
             "created_at": r[6].isoformat() if r[6] else None,
+            "sold_at": r[7].isoformat() if r[7] else None,
         }
         for r in result.all()
     ]
+
+
+@router.get("/purchases/figure-reports/{figure_id}")
+async def list_all_reports_for_figure(
+    figure_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get ALL price reports for a figure (including other users' + anonymous).
+    Used by purchase modal so users can link a purchase to any historical report
+    for this figure, e.g. reports they made before signing up, or reports that
+    represent the same FB listing they bought.
+    """
+    result = await db.execute(text("""
+        SELECT r.id, r.price, r.currency, r.condition, r.platform, r.notes,
+               r.created_at, r.user_id, u.username, u.display_name, l.sold_at
+        FROM user_reports r
+        LEFT JOIN users u ON u.id = r.user_id
+        LEFT JOIN listings l
+          ON l.source = 'user_report'
+          AND l.source_id = 'ur_' || r.id || '_' || r.figure_id
+        WHERE r.figure_id = :fid
+        ORDER BY r.created_at DESC
+        LIMIT 50
+    """), {"fid": figure_id})
+    return [
+        {
+            "id": r[0],
+            "price": r[1],
+            "currency": r[2],
+            "condition": r[3],
+            "platform": r[4],
+            "notes": r[5],
+            "created_at": r[6].isoformat() if r[6] else None,
+            "user_id": r[7],
+            "reporter": (r[9] or r[8]) if r[7] else None,  # display_name or username, null if anonymous
+            "is_mine": r[7] == user.id,
+            "sold_at": r[10].isoformat() if r[10] else None,
+        }
+        for r in result.all()
+    ]
+
+
+_VALID_PURCHASE_CURRENCIES = {"TWD", "JPY", "USD", "CNY"}
+_VALID_PURCHASE_CONDITIONS = {"sealed", "opened", "used", "damaged"}
+
+
+def _validate_purchase_fields(price, currency, condition) -> None:
+    """Enforce shared invariants on user-submitted purchase data.
+
+    Any of the values may be None (partial updates); only validate the ones set.
+    Raises HTTPException 422 on invalid input.
+    """
+    if price is not None:
+        if not isinstance(price, int) or price <= 0 or price > 10_000_000:
+            raise HTTPException(status_code=422, detail="價格必須為 1 到 10,000,000 之間的整數")
+    if currency is not None and currency not in _VALID_PURCHASE_CURRENCIES:
+        raise HTTPException(status_code=422, detail="幣別必須為 TWD / JPY / USD / CNY")
+    if condition is not None and condition not in _VALID_PURCHASE_CONDITIONS:
+        raise HTTPException(status_code=422, detail="商品狀態不正確")
 
 
 async def _create_community_report_from_purchase(
@@ -477,9 +610,12 @@ async def _create_community_report_from_purchase(
     })
     new_report_id = report_result.first()[0]
 
-    # Also create a listing row so it shows on the figure detail page
-    RATES_TO_USD = {"JPY": 1/149.5, "TWD": 1/32.2, "USD": 1, "CNY": 1/7.25}
-    price_usd = price * RATES_TO_USD.get(currency, 1)
+    # Also create a listing row so it shows on the figure detail page.
+    # The `price_canonical` column is a legacy name; contents are the canonical TWD value
+    # used by snapshot ranking and trending SQL.
+    from currency import get_live_rates, to_display
+    rates = await get_live_rates()
+    canonical_twd = to_display(price, currency, "TWD", rates) or 0.0
     cond_value = condition or "used"
     # Match submit_price_report title format: "<figure name> - <platform or 社群回報>"
     title = (figure_name + " - " + ((platform or "").strip() or "社群回報")).strip(" -")
@@ -490,15 +626,15 @@ async def _create_community_report_from_purchase(
         sold_at = _dt2.combine(purchase_date, _dt2.min.time()).replace(tzinfo=_tz2.utc)
 
     await db.execute(text("""
-        INSERT INTO listings (figure_id, source, source_id, title, price, currency, price_usd, condition, is_sold, notes, sold_at, scraped_at)
-        VALUES (:fid, 'user_report', :src_id, :title, :price, :currency, :price_usd, :cond, true, :notes, :sold_at, NOW())
+        INSERT INTO listings (figure_id, source, source_id, title, price, currency, price_canonical, condition, is_sold, notes, sold_at, scraped_at)
+        VALUES (:fid, 'user_report', :src_id, :title, :price, :currency, :price_canonical, :cond, true, :notes, :sold_at, NOW())
     """), {
         "fid": figure_id,
         "src_id": f"ur_{new_report_id}_{figure_id}",
         "title": title,
         "price": price,
         "currency": currency,
-        "price_usd": round(price_usd, 2),
+        "price_canonical": round(canonical_twd, 2),
         "cond": cond_value,
         "notes": (notes or "").strip() or None,
         "sold_at": sold_at,
@@ -509,7 +645,8 @@ async def _create_community_report_from_purchase(
         from routers.figures import recalculate_figure_snapshots
         await recalculate_figure_snapshots(figure_id, db)
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).exception("Snapshot recalc failed for figure_id=%s", figure_id)
 
     return new_report_id
 
@@ -535,11 +672,18 @@ async def create_purchase(
     if existing.first():
         raise HTTPException(status_code=400, detail="已經在已購入清單中")
 
-    # Validate linked report if provided
+    # Validate linked report if provided. Allow linking to ANY report for this
+    # figure (including other users' / anonymous) — the user_purchases row is
+    # private and only copies the price data; the original report is never
+    # modified.
+    # Holds purchase_date inferred from the linked report's listing (if any).
+    # Used as a fallback when the request doesn't supply purchase_date directly.
+    inferred_purchase_date = None
+
     if body.user_report_id:
         rep_result = await db.execute(
-            text("SELECT price, currency, condition FROM user_reports WHERE id = :rid AND user_id = :uid AND figure_id = :fid"),
-            {"rid": body.user_report_id, "uid": user.id, "fid": figure_id},
+            text("SELECT price, currency, condition FROM user_reports WHERE id = :rid AND figure_id = :fid"),
+            {"rid": body.user_report_id, "fid": figure_id},
         )
         rep = rep_result.first()
         if not rep:
@@ -549,14 +693,27 @@ async def create_purchase(
         currency = rep[1]
         condition = rep[2]
         user_report_id = body.user_report_id
+
+        # Pull sold_at from the listing this report created, so the purchase
+        # gets a date even when the frontend doesn't send purchase_date.
+        # Listings created by _create_community_report_from_purchase use
+        # source_id = "ur_{report_id}_{figure_id}".
+        listing_row = await db.execute(
+            text("SELECT sold_at FROM listings WHERE source_id = :sid LIMIT 1"),
+            {"sid": f"ur_{body.user_report_id}_{figure_id}"},
+        )
+        listing_first = listing_row.first()
+        if listing_first and listing_first[0]:
+            inferred_purchase_date = listing_first[0].date()
     else:
-        # Use body data
+        # Use body data — validate invariants
+        _validate_purchase_fields(body.price, body.currency, body.condition)
         price = body.price
         currency = body.currency
         condition = body.condition
         user_report_id = None
 
-    # Parse purchase_date
+    # Parse purchase_date — body wins; otherwise fall back to inferred date.
     purchase_date = None
     if body.purchase_date:
         try:
@@ -564,6 +721,8 @@ async def create_purchase(
             purchase_date = _dt.fromisoformat(body.purchase_date).date()
         except Exception:
             pass
+    if purchase_date is None:
+        purchase_date = inferred_purchase_date
 
     # Optionally create a price report + listing from this purchase
     if not body.user_report_id and body.create_report and price and currency:
@@ -590,15 +749,17 @@ async def create_purchase(
     )
 
     # Insert purchase — purchase.notes is PRIVATE (separate from user_reports.notes which is public)
-    # On initial creation via form submission, we leave purchase.notes NULL.
-    # The user can add private notes later via the "+ 備註" button on the purchase card.
+    # On creation, only body.private_notes is persisted here. body.notes is PUBLIC and is
+    # routed to the user_report/listing via _create_community_report_from_purchase above.
+    private_notes_val = (body.private_notes or "").strip() or None
     await db.execute(text("""
         INSERT INTO user_purchases (user_id, figure_id, price, currency, condition, purchase_date, notes, user_report_id)
-        VALUES (:uid, :fid, :price, :currency, :cond, :pdate, NULL, :rid)
+        VALUES (:uid, :fid, :price, :currency, :cond, :pdate, :pnotes, :rid)
     """), {
         "uid": user.id, "fid": figure_id,
         "price": price, "currency": currency, "cond": condition,
         "pdate": purchase_date,
+        "pnotes": private_notes_val,
         "rid": user_report_id,
     })
     await db.commit()
@@ -647,10 +808,7 @@ async def update_purchase(
 
     # If the caller is filling in price + creating a community report for the first time
     if body.create_report and body.price and body.currency and not current_price and not current_report_id:
-        if body.price <= 0 or body.price > 10000000:
-            raise HTTPException(status_code=400, detail="Invalid price")
-        if body.currency not in ("TWD", "JPY", "CNY", "USD"):
-            raise HTTPException(status_code=400, detail="Invalid currency")
+        _validate_purchase_fields(body.price, body.currency, body.condition)
         new_report_id = await _create_community_report_from_purchase(
             db,
             figure_id=figure_id,
@@ -683,6 +841,7 @@ async def update_purchase(
 
     # Simple edit path (no report creation) — update only user_purchases fields.
     # user_reports.notes is NEVER modified here.
+    _validate_purchase_fields(body.price, body.currency, body.condition)
     updates = []
     params = {"pid": purchase_id}
     for field, val in [

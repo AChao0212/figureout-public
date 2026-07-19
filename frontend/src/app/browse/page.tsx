@@ -19,7 +19,7 @@ export default function BrowsePage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   useEffect(() => {
     setPage(1);

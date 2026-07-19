@@ -61,11 +61,18 @@ export default function FigureNotes({ figureId }: { figureId: string }) {
   const handleReport = async (noteId: number) => {
     if (reportedIds.has(noteId)) return;
     try {
-      await fetch(`${apiUrl}/figures/${figureId}/notes/${noteId}/report`, { method: "POST" });
+      const res = await fetch(`${apiUrl}/figures/${figureId}/notes/${noteId}/report`, { method: "POST" });
+      if (!res.ok) {
+        setToast({ type: "error", msg: "檢舉失敗，請稍後再試" });
+        setTimeout(() => setToast(null), 3000);
+        return;
+      }
       setReportedIds(new Set([...reportedIds, noteId]));
-      // Remove from display if reported
       setNotes(notes.filter(n => n.id !== noteId));
-    } catch {}
+    } catch {
+      setToast({ type: "error", msg: "網路錯誤" });
+      setTimeout(() => setToast(null), 3000);
+    }
   };
 
   const formatDate = (dateStr?: string) => {

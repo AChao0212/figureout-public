@@ -72,8 +72,12 @@ async def confirm_transaction(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Confirm transaction completed from user's side."""
-    txn_res = await db.execute(select(Transaction).where(Transaction.id == txn_id))
+    """Confirm transaction completed from user's side.
+    Uses SELECT FOR UPDATE on the transaction row so concurrent confirms from
+    buyer and seller serialize cleanly instead of overwriting each other."""
+    txn_res = await db.execute(
+        select(Transaction).where(Transaction.id == txn_id).with_for_update()
+    )
     txn = txn_res.scalar_one_or_none()
     if not txn:
         raise HTTPException(status_code=404, detail="找不到該交易")

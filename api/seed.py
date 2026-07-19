@@ -193,7 +193,7 @@ def seed():
                                 title=f"{fig_name} - {label}",
                                 price=listing_price_jpy,
                                 currency="JPY",
-                                price_usd=round(listing_price_jpy * 0.0067, 2),
+                                price_canonical=round(listing_price_jpy * 0.0067, 2),
                                 condition=cond,
                                 is_sold=True,
                                 sold_at=today - timedelta(days=randint(1, 30)),

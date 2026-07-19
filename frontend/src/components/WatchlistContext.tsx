@@ -19,7 +19,7 @@ interface WatchlistContextType {
   addToWatchlist: (id: number) => void;
   removeFromWatchlist: (id: number) => void;
   isInWatchlist: (id: number) => boolean;
-  clearWatchlist: () => void;
+  clearWatchlist: () => Promise<void>;
   mergeToServer: () => Promise<void>;
   refreshFromServer: () => Promise<boolean>;
 }
@@ -137,9 +137,19 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
     [watchlist],
   );
 
-  const clearWatchlist = useCallback(() => {
-    if (serverMode) {
-      watchlist.forEach((id) => apiCall("DELETE", `/user/watchlist/${id}`));
+  const clearWatchlist = useCallback(async () => {
+    if (serverMode && watchlist.length > 0) {
+      // Wait for all DELETEs to finish before clearing local state, so a quick
+      // re-add after clear doesn't race the deletes.
+      await Promise.all(
+        watchlist.map((id) => {
+          try {
+            return apiCall("DELETE", `/user/watchlist/${id}`);
+          } catch {
+            return Promise.resolve();
+          }
+        }),
+      );
     }
     setWatchlist([]);
   }, [serverMode, watchlist, apiCall]);

@@ -1,8 +1,9 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { EXCHANGE_RATES, convertCurrency as _convertCurrency } from "@/lib/currency";
 
-interface ExchangeRates {
+export interface ExchangeRates {
   USD: number;
   TWD: number;
   JPY: number;
@@ -10,7 +11,12 @@ interface ExchangeRates {
   updated_at?: string | null;
 }
 
-const DEFAULT_RATES: ExchangeRates = { USD: 1, TWD: 32.2, JPY: 149.5, CNY: 7.25 };
+const DEFAULT_RATES: ExchangeRates = {
+  USD: EXCHANGE_RATES.USD,
+  TWD: EXCHANGE_RATES.TWD,
+  JPY: EXCHANGE_RATES.JPY,
+  CNY: EXCHANGE_RATES.CNY,
+};
 
 const ExchangeRateContext = createContext<ExchangeRates>(DEFAULT_RATES);
 
@@ -20,13 +26,19 @@ export function ExchangeRateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
     fetch(`${apiUrl}/browse/exchange-rates`)
-      .then(r => r.json())
-      .then(data => {
+      .then((r) => r.json())
+      .then((data) => {
         if (data.USD && data.TWD && data.JPY && data.CNY) {
-          setRates({ USD: data.USD, TWD: data.TWD, JPY: data.JPY, CNY: data.CNY, updated_at: data.updated_at });
+          setRates({
+            USD: data.USD,
+            TWD: data.TWD,
+            JPY: data.JPY,
+            CNY: data.CNY,
+            updated_at: data.updated_at,
+          });
         }
       })
-      .catch(() => {});  // fallback to defaults
+      .catch(() => {}); // fallback to defaults
   }, []);
 
   return <ExchangeRateContext value={rates}>{children}</ExchangeRateContext>;
@@ -36,21 +48,16 @@ export function useExchangeRates(): ExchangeRates {
   return useContext(ExchangeRateContext);
 }
 
-// Helper: convert from one currency to USD
-export function toUSD(amount: number, fromCurrency: string, rates: ExchangeRates): number {
-  const rate = (rates as unknown as Record<string, number>)[fromCurrency] || 1;
-  return amount / rate;
-}
-
-// Helper: convert USD to display currency
-export function fromUSD(usd: number, toCurrency: string, rates: ExchangeRates): number {
-  const rate = (rates as unknown as Record<string, number>)[toCurrency] || 1;
-  return usd * rate;
-}
-
-// Helper: convert between any two currencies
+// Backward-compat re-exports — implementation lives in @/lib/currency.
+// New code should import directly from "@/lib/currency".
 export function convertCurrency(amount: number, from: string, to: string, rates: ExchangeRates): number {
-  if (from === to) return amount;
-  const usd = toUSD(amount, from, rates);
-  return fromUSD(usd, to, rates);
+  return _convertCurrency(amount, from, to, rates as unknown as Record<string, number>);
+}
+
+export function toUSD(amount: number, fromCurrency: string, rates: ExchangeRates): number {
+  return _convertCurrency(amount, fromCurrency, "USD", rates as unknown as Record<string, number>);
+}
+
+export function fromUSD(usd: number, toCurrency: string, rates: ExchangeRates): number {
+  return _convertCurrency(usd, "USD", toCurrency, rates as unknown as Record<string, number>);
 }

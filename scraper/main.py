@@ -21,6 +21,14 @@ from db.models import Character, ErrorReport, Figure, Franchise, Listing, PriceS
 from db.session import SessionLocal
 from listing_validator import validate_listing
 from opencc import OpenCC
+from currency import to_display as _to_display
+
+
+def _to_canonical_twd(price: float, currency: str) -> float:
+    """Convert any (price, currency) pair to the canonical TWD value used by the
+    `listings.price_canonical` column (legacy name, TWD contents). Uses fallback rates
+    so we don't fetch live rates inside batch scrapes."""
+    return _to_display(price, currency, "TWD", {}) or 0.0
 
 _s2t = OpenCC("s2t")  # Simplified -> Traditional Chinese
 
@@ -29,6 +37,13 @@ CHEAP_PATTERNS = re.compile(
     r"(粘土人|黏土人|nendoroid|figma|景品|一番赏|一番獎|扭蛋|盲盒|trading|食玩|迷你)",
     re.IGNORECASE,
 )
+
+# Price-scrape refresh cadence: a figure is re-scraped on a source once its last
+# scan (figures.{yahoo,mercari}_scanned_at) is older than this many days. Popular
+# figures cycle back for fresh prices; recently-scanned ones are skipped so each
+# run makes forward progress through the view_count-ranked queue.
+YAHOO_STALE_DAYS = 21
+MERCARI_STALE_DAYS = 21
 
 
 
@@ -388,6 +403,7 @@ def import_hpoi_catalog(self, start_page: int = 1, max_pages: int = 100, order: 
                     figure = Figure(
                         name=name,
                         character_id=character_id,
+                        franchise_id=franchise_id,  # mirror character's franchise so fig.franchise_id is populated on insert
                         manufacturer=manufacturer,
                         scale=scale,
                         source_id=hpoi_id if hpoi_id else None,
@@ -546,6 +562,9 @@ def enrich_figures(self, batch_size: int = 100, min_price_jpy: int = 0) -> dict:
                     new_character = fig.name.split(" ")[0] if " " in fig.name else fig.name
                 character_id = _get_or_create_character(session, new_character, franchise_id)
                 fig.character_id = character_id
+                # Keep denormalised figure.franchise_id in sync with the character's
+                # new franchise — otherwise enrich silently leaves them drifted.
+                fig.franchise_id = franchise_id
 
             if price_jpy > 0:
                 fig.retail_price = price_jpy
@@ -621,12 +640,29 @@ def scrape_mercari_prices(self, batch_size: int = 30) -> dict:
     processed = 0
 
     try:
-        # Get enriched figures with Japanese names, ordered by least listings
-        figures = session.query(Figure).filter(
-            Figure.image_url.isnot(None),
-            Figure.original_name.isnot(None),
-            Figure.retail_price.isnot(None),
-        ).order_by(Figure.view_count.desc().nullslast(), Figure.id).limit(batch_size).all()
+        # Refresh-oriented selection (same rationale as the Yahoo task): most-
+        # viewed figures not scanned on Mercari within the staleness window,
+        # rather than "uncovered-first" which stuck on the niche tail and never
+        # refreshed popular figures. The per-figure `mercari_scanned_at` stamp
+        # (set in the loop) stops re-grinding zero-match names every run.
+        from sqlalchemy import or_
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(days=MERCARI_STALE_DAYS)
+        figures = (
+            session.query(Figure)
+            .filter(
+                Figure.image_url.isnot(None),
+                Figure.original_name.isnot(None),
+                Figure.retail_price.isnot(None),
+                or_(Figure.mercari_scanned_at.is_(None),
+                    Figure.mercari_scanned_at < stale_cutoff),
+            )
+            .order_by(
+                Figure.view_count.desc().nullslast(),
+                Figure.id,
+            )
+            .limit(batch_size)
+            .all()
+        )
 
         if not figures:
             logger.info("No figures to price-check on Mercari")
@@ -636,84 +672,118 @@ def scrape_mercari_prices(self, batch_size: int = 30) -> dict:
 
         async def _fetch():
             nonlocal matched, listings_created, errors, processed
-            scraper = MercariScraper()
-            try:
+            # Share one Chromium across the whole batch — launching per query
+            # would cost ~2s × batch_size of startup time.
+            async with MercariScraper() as scraper:
                 for fig in figures:
                     processed += 1
-                    # Use Japanese name for Mercari search
-                    query = fig.original_name
-                    # Trim to core name (remove long subtitles)
-                    if len(query) > 50:
-                        query = query[:50]
+                    # Stamp scan time up front (match or not) so we don't re-grind
+                    # the same zero-match names each run — mirrors the Yahoo task.
+                    fig.mercari_scanned_at = datetime.now(timezone.utc)
+                    # Trim long names — Mercari's keyword-too-specific path returns 0.
+                    query = (fig.original_name or "")[:50]
+                    if not query.strip():
+                        continue
 
                     try:
                         results = await scraper.search_sold(query, limit=20)
                         if not results:
-                            await _asyncio.sleep(_random.uniform(3.0, 6.0))
+                            await _asyncio.sleep(_random.uniform(2.0, 4.0))
                             continue
 
                         matched += 1
-                        for r in results[:5]:  # Top 5 per figure
-                            # Skip if already exists
-                            if r["source_id"]:
-                                existing = session.query(Listing).filter(
-                                    Listing.source == "mercari",
-                                    Listing.source_id == r["source_id"],
-                                ).first()
-                                if existing:
-                                    continue
+                        fig_dict = {
+                            "id": fig.id, "name": fig.name,
+                            "original_name": fig.original_name,
+                            "manufacturer": fig.manufacturer, "scale": fig.scale,
+                            "retail_price": fig.retail_price,
+                            "retail_currency": fig.retail_currency or "JPY",
+                        }
+                        # Look at slightly more candidates than Yahoo since the LLM
+                        # gate filters Mercari's noisier "bundle/lot" listings hard.
+                        for r in results[:5]:
+                            if not r.get("source_id"):
+                                continue
+                            existing = session.query(Listing).filter(
+                                Listing.source == "mercari",
+                                Listing.source_id == r["source_id"],
+                            ).first()
+                            if existing:
+                                continue
 
-                            # Basic price sanity check against retail
                             if fig.retail_price and r["price_jpy"] > 0:
                                 ratio = r["price_jpy"] / fig.retail_price
                                 if ratio > 5.0 or ratio < 0.05:
-                                    continue  # Likely wrong match
+                                    continue
 
-                            # Filter out non-figure items & flag for review
                             if not is_valid_figure_listing(r["title"]):
                                 is_valid, reason = validate_listing(r["title"])
                                 if not is_valid:
-                                    report = ErrorReport(
-                                        figure_id=fig.id,
-                                        report_type="suspicious_listing",
-                                        description=(
-                                            f"[Mercari] 疑似非公仔商品: {reason}"
-                                            f"\nTitle: {r['title']}"
-                                            f"\nURL: {r.get('url', 'N/A')}"
-                                        ),
-                                        status="pending",
-                                    )
-                                    session.add(report)
-                                    logger.info("Flagged suspicious Mercari listing: %s", r["title"][:50])
+                                    # Dedup: the same blocked item resurfaces every
+                                    # run (it stays listed on Mercari), so only file
+                                    # one report per URL — otherwise the review queue
+                                    # fills with duplicates of the same body-pillow/etc.
+                                    _url = r.get("url") or ""
+                                    _dupe = _url and session.query(ErrorReport).filter(
+                                        ErrorReport.report_type == "suspicious_listing",
+                                        ErrorReport.description.like(f"%{_url}%"),
+                                    ).first()
+                                    if not _dupe:
+                                        session.add(ErrorReport(
+                                            figure_id=fig.id,
+                                            report_type="suspicious_listing",
+                                            description=(
+                                                f"[Mercari] 疑似非公仔商品: {reason}"
+                                                f"\nTitle: {r['title']}\nURL: {_url or 'N/A'}"
+                                            ),
+                                            status="pending",
+                                        ))
+                                        logger.info("Flagged suspicious Mercari listing: %s", r["title"][:50])
                                 continue
-
-                            # Filter out wrong figure types
                             if not listing_matches_figure_type(r["title"], fig.figure_type, fig.scale):
                                 continue
 
-                            listing = Listing(
-                                figure_id=fig.id,
-                                source="mercari",
-                                source_id=r["source_id"],
-                                title=r["title"],
-                                price=r["price_jpy"],
-                                currency="JPY",
-                                price_usd=round(r["price_jpy"] / 149.5, 2),
-                                condition=r.get("condition", "used"),
-                                is_sold=True,
-                                url=r["url"],
-                                image_url=r.get("image_url"),
-                            )
-                            session.add(listing)
-                            listings_created += 1
+                            # LLM gate — catches まとめ売 / lot bundles and same-character
+                            # different-version cases that regex can't reliably reject.
+                            from llm_match import check_match
+                            verdict = check_match(fig_dict, r["title"])
+                            if (not verdict.accept or verdict.confidence < 0.7) \
+                                    and verdict.reason != "llm_unavailable":
+                                logger.debug(
+                                    "LLM rejected mercari fig=%d title=%r conf=%.2f reason=%s",
+                                    fig.id, r["title"][:60], verdict.confidence, verdict.reason,
+                                )
+                                continue
+
+                            # Mercari only shows relative times — fetch the item
+                            # detail page to resolve sold_at. One extra page load
+                            # per ACCEPTED listing only (LLM already filtered).
+                            try:
+                                sold_at = await scraper.fetch_sold_at(r["source_id"])
+                            except Exception:
+                                sold_at = None
+
+                            try:
+                                session.add(Listing(
+                                    figure_id=fig.id, source="mercari",
+                                    source_id=r["source_id"], title=r["title"],
+                                    price=r["price_jpy"], currency="JPY",
+                                    price_canonical=round(_to_canonical_twd(r["price_jpy"], "JPY"), 2),
+                                    condition=r.get("condition", "used"),
+                                    is_sold=True, url=r["url"],
+                                    image_url=r.get("image_url"),
+                                    sold_at=sold_at,
+                                ))
+                                session.flush()
+                                listings_created += 1
+                            except Exception:
+                                session.rollback()
                     except Exception:
                         errors += 1
                         if errors <= 5:
-                            logger.exception("Mercari search failed: %s", fig.original_name[:30] if fig.original_name else "?")
+                            logger.exception("Mercari search failed: %s", (fig.original_name or '?')[:30])
 
-                    await _asyncio.sleep(_random.uniform(4.0, 8.0))
-            finally:
-                await scraper.close()
+                    await _asyncio.sleep(_random.uniform(2.0, 4.0))
 
         _asyncio.run(_fetch())
         session.commit()
@@ -728,6 +798,232 @@ def scrape_mercari_prices(self, batch_size: int = 30) -> dict:
         session.close()
 
     return {"processed": processed, "matched": matched, "listings": listings_created, "errors": errors}
+
+
+
+# ---------------------------------------------------------------------------
+# Phase 1c: Scrape preowned listings from AmiAmi (Japanese retailer used market)
+# ---------------------------------------------------------------------------
+
+def _amiami_canon_mfr(s: str | None) -> str | None:
+    """Canonicalise manufacturer strings from EITHER AmiAmi (English) OR our
+    DB (EN/JP/Chinese mix) to a single key so we can index by manufacturer.
+
+    AmiAmi search returns 0 results for Japanese keywords, so the per-figure
+    search approach fails. We instead pull AmiAmi's entire preowned inventory
+    and reverse-match each item to a Figure using manufacturer + scale.
+    """
+    import re as _re
+    if not s:
+        return None
+    s_low = s.lower().strip()
+    rules = [
+        (r"good\s*smile|gsc|良笑|グッドスマイル", "gsc"),
+        (r"phat|ファット", "phat"),
+        (r"max\s*factory|マックスファクトリー", "maxfactory"),
+        (r"^alter\b|^alter$|アルター", "alter"),
+        (r"megahouse|メガハウス|メガ\b", "megahouse"),
+        (r"kotobukiya|コトブキヤ|壽屋|寿屋", "kotobukiya"),
+        (r"aniplex|アニプレックス", "aniplex"),
+        (r"freeing|フリーイング", "freeing"),
+        (r"bandai|バンダイ", "bandai"),
+        (r"orcatoys|オルカトイズ", "orcatoys"),
+        (r"quesq|クエス", "quesq"),
+        (r"vertex|ヴェルテクス", "vertex"),
+        (r"daibadi|ダイバディ", "daibadi"),
+        (r"mimeyoi|ミメヨイ", "mimeyoi"),
+        (r"furyu|f[:_]nex|フリュー", "furyu"),
+        (r"wave|ウェーブ", "wave"),
+        (r"spiritale", "spiritale"),
+        (r"elcoco", "elcoco"),
+        (r"claynel", "claynel"),
+        (r"union\s*creative|ユニオンクリエイティブ", "unioncreative"),
+        (r"hobby\s*stock", "hobbystock"),
+        (r"plum", "plum"),
+    ]
+    for pat, canon in rules:
+        if _re.search(pat, s_low):
+            return canon
+    # fallback to alphanumeric squash so two identical brand strings still
+    # match each other even if not in the rules list above.
+    return _re.sub(r"[^a-z0-9]", "", s_low) or None
+
+
+@app.task(name="scrape_amiami_preowned", bind=True, max_retries=1, default_retry_delay=600)
+def scrape_amiami_preowned(self, _unused_batch_size: int = None) -> dict:
+    """Reverse-pull AmiAmi preowned inventory and match each item to a Figure
+    in our DB. (The per-figure search approach in the prior version returned
+    zero matches because AmiAmi's `lang=eng` keyword index does not respond
+    to Japanese search terms — see commit/note in _amiami_canon_mfr.)
+
+    Flow:
+      1. Paginate AmiAmi `s_st_condition_flg=1` (~500 items, 8-12s between pages)
+      2. Build an in-memory index of our figures grouped by canonical manufacturer
+      3. For each AmiAmi item: dedup → candidate figures (same canon mfr + same/no scale)
+         → LLM-gate top 8 candidates → insert best match if conf ≥ 0.7
+
+    `batch_size` is unused — we always pull the full preowned set per run.
+    """
+    import asyncio as _asyncio
+    from scrapers.amiami import AmiAmiScraper
+    from llm_match import check_match
+
+    session = SessionLocal()
+    items_seen = 0
+    items_existing = 0
+    items_no_candidate = 0
+    items_no_match = 0
+    listings_created = 0
+    errors = 0
+
+    try:
+        # Pre-build canon → [figures] index. Only consider figures with both
+        # original_name and a manufacturer (we use both downstream).
+        all_figs = (
+            session.query(Figure)
+            .filter(Figure.manufacturer.isnot(None),
+                    Figure.original_name.isnot(None))
+            .all()
+        )
+        mfr_index: dict[str, list] = {}
+        for f in all_figs:
+            canon = _amiami_canon_mfr(f.manufacturer)
+            if canon:
+                mfr_index.setdefault(canon, []).append(f)
+        logger.info(
+            "AmiAmi reverse-pull: indexed %d figures across %d manufacturer canons",
+            len(all_figs), len(mfr_index),
+        )
+
+        async def _do_scrape():
+            nonlocal items_seen, items_existing, items_no_candidate
+            nonlocal items_no_match, listings_created, errors
+
+            # Step 1: pull all preowned items first; the candidate-matching loop
+            # is CPU/DB-bound and should not hold open an HTTP client across
+            # 500+ LLM calls.
+            items: list[dict] = []
+            async with AmiAmiScraper() as scraper:
+                try:
+                    async for item in scraper.iter_preowned_all_pages():
+                        items.append(item)
+                except Exception:
+                    logger.exception("AmiAmi pagination crashed mid-stream")
+            logger.info("AmiAmi pulled %d preowned items", len(items))
+
+            # Step 2: match each item to a Figure
+            for item in items:
+                items_seen += 1
+                try:
+                    existing = session.query(Listing).filter(
+                        Listing.source == "amiami",
+                        Listing.source_id == item["source_id"],
+                    ).first()
+                    if existing:
+                        items_existing += 1
+                        continue
+
+                    canon = _amiami_canon_mfr(item.get("maker_raw"))
+                    if not canon:
+                        items_no_candidate += 1
+                        continue
+
+                    pool = mfr_index.get(canon, [])
+                    if not pool:
+                        items_no_candidate += 1
+                        continue
+
+                    # Scale filter: if AmiAmi item has scale, require figure
+                    # scale to match (or be unknown). If item is non-scale,
+                    # don't constrain.
+                    scale = item.get("scale_str")
+                    if scale:
+                        candidates = [f for f in pool if not f.scale or f.scale == scale]
+                    else:
+                        candidates = list(pool)
+                    if not candidates:
+                        items_no_candidate += 1
+                        continue
+
+                    # Cap top 8 by view_count to bound LLM calls per item
+                    candidates.sort(key=lambda f: -(f.view_count or 0))
+                    candidates = candidates[:8]
+
+                    best = None  # (figure, verdict)
+                    for fig in candidates:
+                        fig_dict = {
+                            "id": fig.id, "name": fig.name,
+                            "original_name": fig.original_name,
+                            "manufacturer": fig.manufacturer, "scale": fig.scale,
+                            "retail_price": fig.retail_price,
+                            "retail_currency": fig.retail_currency or "JPY",
+                        }
+                        verdict = check_match(fig_dict, item["title"])
+                        # Reverse-pull uses a higher bar than forward-search
+                        # (0.85 vs 0.70): when the true figure is absent from
+                        # our DB the LLM can still score a same-series wrong
+                        # candidate in the 0.7-0.85 band. Genuine reverse-pull
+                        # matches sit at 0.95+, so 0.85 costs us nothing real.
+                        if (verdict.accept
+                                and verdict.confidence >= 0.85
+                                and (best is None
+                                     or verdict.confidence > best[1].confidence)):
+                            best = (fig, verdict)
+                            # Confidence 0.99 — short-circuit: unlikely a
+                            # different candidate would beat this and we save LLM calls
+                            if verdict.confidence >= 0.99:
+                                break
+
+                    if not best:
+                        items_no_match += 1
+                        continue
+
+                    fig, verdict = best
+                    try:
+                        session.add(Listing(
+                            figure_id=fig.id, source="amiami",
+                            source_id=item["source_id"], title=item["title"],
+                            price=item["price_jpy"], currency="JPY",
+                            price_canonical=round(_to_canonical_twd(item["price_jpy"], "JPY"), 2),
+                            condition="used", is_sold=False,
+                            url=item["url"], image_url=item.get("image_url"),
+                        ))
+                        session.flush()
+                        listings_created += 1
+                        if listings_created <= 5 or listings_created % 25 == 0:
+                            logger.info(
+                                "AmiAmi MATCH #%d: F%d ¥%d conf=%.2f | %s",
+                                listings_created, fig.id, item["price_jpy"],
+                                verdict.confidence, item["title"][:60],
+                            )
+                    except Exception:
+                        session.rollback()
+                        errors += 1
+                except Exception:
+                    errors += 1
+                    if errors <= 5:
+                        logger.exception("AmiAmi match failed for gcode=%s",
+                                         item.get("source_id"))
+
+        _asyncio.run(_do_scrape())
+        session.commit()
+        logger.info(
+            "AmiAmi reverse-pull done: seen=%d existing=%d no_candidate=%d "
+            "no_match=%d new_listings=%d errors=%d",
+            items_seen, items_existing, items_no_candidate,
+            items_no_match, listings_created, errors,
+        )
+    except Exception:
+        session.rollback()
+        logger.exception("AmiAmi reverse-pull crashed")
+    finally:
+        session.close()
+
+    return {
+        "items_seen": items_seen, "existing": items_existing,
+        "no_candidate": items_no_candidate, "no_match": items_no_match,
+        "listings": listings_created, "errors": errors,
+    }
 
 
 
@@ -749,15 +1045,24 @@ def scrape_yahoo_prices(self, batch_size: int = 30) -> dict:
     processed = 0
 
     try:
-        # Prioritize figures that have no listings yet, then by popularity
-        from sqlalchemy import exists
-        has_listing = exists().where(Listing.figure_id == Figure.id)
+        # Refresh-oriented selection. The old "uncovered-first" ordering
+        # (has_yahoo.asc()) ground the niche tail forever — 300 processed / 1
+        # listing per day — and NEVER re-scraped the ~1,800 popular figures that
+        # already had a Yahoo listing, so their prices silently went stale.
+        # New strategy: pick figures NOT scanned on Yahoo within the staleness
+        # window, most-viewed first. The per-figure `yahoo_scanned_at` stamp set
+        # in the loop (below) marks every processed figure — match or not — so
+        # we stop re-grinding the same zero-match niche names each run, and
+        # popular figures cycle back for a fresh scrape every ~YAHOO_STALE_DAYS.
+        from sqlalchemy import or_
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(days=YAHOO_STALE_DAYS)
         figures = session.query(Figure).filter(
             Figure.image_url.isnot(None),
             Figure.original_name.isnot(None),
             Figure.retail_price.isnot(None),
+            or_(Figure.yahoo_scanned_at.is_(None),
+                Figure.yahoo_scanned_at < stale_cutoff),
         ).order_by(
-            has_listing.asc(),  # Figures without listings first
             Figure.view_count.desc().nullslast(),
             Figure.id,
         ).limit(batch_size).all()
@@ -774,6 +1079,9 @@ def scrape_yahoo_prices(self, batch_size: int = 30) -> dict:
             try:
                 for fig in figures:
                     processed += 1
+                    # Stamp scan time up front so a figure is marked scanned even
+                    # if it matches nothing — prevents re-grinding zero-match names.
+                    fig.yahoo_scanned_at = datetime.now(timezone.utc)
                     # Build search query from Japanese name
                     query = fig.original_name or ""
                     # Check if original_name is purely Chinese (no katakana/hiragana)
@@ -796,7 +1104,8 @@ def scrape_yahoo_prices(self, batch_size: int = 30) -> dict:
                             continue
 
                         matched += 1
-                        for r in results[:5]:
+                        # Yahoo: 3 top candidates per figure (LLM gate caps cost).
+                        for r in results[:3]:
                             if r["source_id"]:
                                 existing = session.query(Listing).filter(
                                     Listing.source == "yahoo_auction",
@@ -818,23 +1127,59 @@ def scrape_yahoo_prices(self, batch_size: int = 30) -> dict:
                             if not is_valid_figure_listing(r["title"]):
                                 is_valid, reason = validate_listing(r["title"])
                                 if not is_valid:
-                                    report = ErrorReport(
-                                        figure_id=fig.id,
-                                        report_type="suspicious_listing",
-                                        description=(
-                                            f"[Yahoo] 疑似非公仔商品: {reason}"
-                                            f"\nTitle: {r['title']}"
-                                            f"\nURL: {r.get('url', 'N/A')}"
-                                        ),
-                                        status="pending",
-                                    )
-                                    session.add(report)
-                                    logger.info("Flagged suspicious Yahoo listing: %s", r["title"][:50])
+                                    # Dedup by URL — same blocked auction shows up
+                                    # across runs; one report per URL is enough.
+                                    _url = r.get("url") or ""
+                                    _dupe = _url and session.query(ErrorReport).filter(
+                                        ErrorReport.report_type == "suspicious_listing",
+                                        ErrorReport.description.like(f"%{_url}%"),
+                                    ).first()
+                                    if not _dupe:
+                                        session.add(ErrorReport(
+                                            figure_id=fig.id,
+                                            report_type="suspicious_listing",
+                                            description=(
+                                                f"[Yahoo] 疑似非公仔商品: {reason}"
+                                                f"\nTitle: {r['title']}"
+                                                f"\nURL: {_url or 'N/A'}"
+                                            ),
+                                            status="pending",
+                                        )
+                                        )
+                                        logger.info("Flagged suspicious Yahoo listing: %s", r["title"][:50])
                                 continue
 
                             # Filter out wrong figure types (e.g. Nendoroid in scale figure results)
                             if not listing_matches_figure_type(r["title"], fig.figure_type, fig.scale):
                                 continue
+
+                            # Final LLM gate: existing regex/signal filters miss subtle
+                            # mismatches like "same character, different version" or
+                            # "shortened title that drops the distinguishing tag".
+                            # Cached in Redis, so the second-day run is free for the
+                            # same (figure, title) pair.
+                            from llm_match import check_match
+                            fig_dict = {
+                                "id": fig.id, "name": fig.name,
+                                "original_name": fig.original_name,
+                                "manufacturer": fig.manufacturer, "scale": fig.scale,
+                                "retail_price": fig.retail_price,
+                                "retail_currency": fig.retail_currency or "JPY",
+                            }
+                            verdict = check_match(fig_dict, r["title"])
+                            if not verdict.accept or verdict.confidence < 0.7:
+                                # LLM rejected or low confidence — skip silently.
+                                # `llm_unavailable` returns accept=True with conf 0.5, so
+                                # those fall through to here and are also skipped (defensive).
+                                # If we wanted "fail open", flip the condition; for now
+                                # we prefer accuracy over coverage.
+                                if verdict.reason != "llm_unavailable":
+                                    logger.debug(
+                                        "LLM rejected fig=%d title=%r conf=%.2f reason=%s",
+                                        fig.id, r["title"][:60], verdict.confidence, verdict.reason,
+                                    )
+                                    continue
+                                # LLM down — fall through and accept based on regex/signal pass.
 
                             try:
                                 listing = Listing(
@@ -844,11 +1189,14 @@ def scrape_yahoo_prices(self, batch_size: int = 30) -> dict:
                                     title=r["title"],
                                     price=r["price_jpy"],
                                     currency="JPY",
-                                    price_usd=round(r["price_jpy"] / 149.5, 2),
+                                    price_canonical=round(_to_canonical_twd(r["price_jpy"], "JPY"), 2),
                                     condition=r.get("condition", "used"),
                                     is_sold=True,
                                     url=r["url"],
                                     image_url=r.get("image_url"),
+                                    # endTime from Yahoo's __NEXT_DATA__ is the auction
+                                    # close time = sold_at for closedsearch results.
+                                    sold_at=r.get("sold_at"),
                                 )
                                 session.add(listing)
                                 session.flush()
@@ -890,116 +1238,95 @@ def generate_price_snapshots(self) -> dict:
     """Aggregate listings into daily price snapshots per figure per condition.
     Creates 3 snapshot rows per figure per day: all, sealed, used.
     Also updates the figure current avg_price and median_price.
+
+    Aggregation logic comes from `currency.aggregate_prices` (mirrored from
+    `api/currency.py`) so this matches the API's `recalculate_figure_snapshots`.
     """
-    from statistics import median as _median
-    
+    from currency import aggregate_prices
+
     session = SessionLocal()
     created = 0
     updated = 0
     errors = 0
     today = date.today()
-    
+
     try:
         figure_ids = [
             row[0] for row in
             session.query(Listing.figure_id).filter(
                 Listing.figure_id.isnot(None),
-                Listing.price_usd.isnot(None),
-                Listing.price_usd > 0,
+                Listing.price_canonical.isnot(None),
+                Listing.price_canonical > 0,
             ).distinct().all()
         ]
-        
+
         logger.info("Generating snapshots for %d figures with listings", len(figure_ids))
-        
+
         for fig_id in figure_ids:
             try:
-                # Use listings whose sold_at is within 30 days of today
-                # This ensures the snapshot reflects recent market prices, not old transactions
+                # Recent window first; fall back to all-time when no recent activity.
                 window_start = today - timedelta(days=30)
-                all_listings = session.query(Listing.price_usd, Listing.condition).filter(
+                all_listings = session.query(Listing.price_canonical, Listing.condition).filter(
                     Listing.figure_id == fig_id,
-                    Listing.price_usd.isnot(None),
-                    Listing.price_usd > 0,
+                    Listing.price_canonical.isnot(None),
+                    Listing.price_canonical > 0,
                     or_(
                         and_(Listing.sold_at.isnot(None), Listing.sold_at >= window_start),
                         and_(Listing.sold_at.is_(None), Listing.scraped_at >= window_start),
                     ),
                 ).all()
-                
-                # Fallback: if no recent listings, use all listings (for figures with only old data)
                 if not all_listings:
-                    all_listings = session.query(Listing.price_usd, Listing.condition).filter(
+                    all_listings = session.query(Listing.price_canonical, Listing.condition).filter(
                         Listing.figure_id == fig_id,
-                        Listing.price_usd.isnot(None),
-                        Listing.price_usd > 0,
+                        Listing.price_canonical.isnot(None),
+                        Listing.price_canonical > 0,
                     ).all()
-                
                 if not all_listings:
                     continue
-                
-                prices_by_cond = {"all": [], "sealed": [], "opened": [], "used": [], "damaged": []}
-                for price_usd, cond in all_listings:
-                    prices_by_cond["all"].append(float(price_usd))
+
+                # Bucket prices by condition; "all" holds every listing.
+                prices_by_cond: dict[str, list[float]] = {
+                    "all": [], "sealed": [], "opened": [], "used": [], "damaged": [],
+                }
+                for price_canonical, cond in all_listings:
+                    prices_by_cond["all"].append(float(price_canonical))
                     bucket = cond if cond in ("sealed", "opened", "used", "damaged") else "used"
-                    prices_by_cond[bucket].append(float(price_usd))
-                
+                    prices_by_cond[bucket].append(float(price_canonical))
+
                 for cond, prices in prices_by_cond.items():
                     if not prices:
                         continue
-                    
-                    prices.sort()
-                    # Trimmed mean (10% each side) to protect against price manipulation
-                    if len(prices) >= 5:
-                        trim_count = max(1, len(prices) // 10)
-                        trimmed = prices[trim_count:-trim_count]
-                        avg_p = round(sum(trimmed) / len(trimmed), 2)
-                    else:
-                        avg_p = round(sum(prices) / len(prices), 2)
-                    med_p = round(_median(prices), 2)
-                    min_p = round(min(prices), 2)
-                    max_p = round(max(prices), 2)
-                    
+                    agg = aggregate_prices(prices, trim_pct=10)
+
                     existing = session.query(PriceSnapshot).filter(
                         PriceSnapshot.figure_id == fig_id,
                         PriceSnapshot.date == today,
                         PriceSnapshot.condition == cond,
                     ).first()
-                    
+
                     if existing:
-                        existing.avg_price = avg_p
-                        existing.median_price = med_p
-                        existing.min_price = min_p
-                        existing.max_price = max_p
-                        existing.sample_count = len(prices)
+                        existing.avg_price = agg["avg"]
+                        existing.median_price = agg["median"]
+                        existing.min_price = agg["min"]
+                        existing.max_price = agg["max"]
+                        existing.sample_count = agg["count"]
                         updated += 1
                     else:
-                        snap = PriceSnapshot(
-                            figure_id=fig_id,
-                            date=today,
-                            avg_price=avg_p,
-                            median_price=med_p,
-                            min_price=min_p,
-                            max_price=max_p,
-                            sample_count=len(prices),
-                            condition=cond,
-                        )
-                        session.add(snap)
+                        session.add(PriceSnapshot(
+                            figure_id=fig_id, date=today, condition=cond,
+                            avg_price=agg["avg"], median_price=agg["median"],
+                            min_price=agg["min"], max_price=agg["max"], sample_count=agg["count"],
+                        ))
                         created += 1
-                
-                # Update figure current prices from all condition
-                all_prices = prices_by_cond["all"]
-                if all_prices:
+
+                # Cache figure-level current prices using the same aggregation.
+                if prices_by_cond["all"]:
                     fig = session.query(Figure).filter(Figure.id == fig_id).first()
                     if fig:
-                        # Trimmed mean for figure current price (all_prices already sorted)
-                        if len(all_prices) >= 5:
-                            _tc = max(1, len(all_prices) // 10)
-                            _trimmed = all_prices[_tc:-_tc]
-                            fig.avg_price = round(sum(_trimmed) / len(_trimmed), 2)
-                        else:
-                            fig.avg_price = round(sum(all_prices) / len(all_prices), 2)
-                        fig.median_price = round(_median(all_prices), 2)
-                
+                        overall = aggregate_prices(prices_by_cond["all"], trim_pct=10)
+                        fig.avg_price = overall["avg"]
+                        fig.median_price = overall["median"]
+
             except Exception:
                 errors += 1
                 if errors <= 5:
@@ -1088,17 +1415,17 @@ def refresh_current_prices(self) -> dict:
             row[0] for row in
             session.query(Listing.figure_id).filter(
                 Listing.figure_id.isnot(None),
-                Listing.price_usd.isnot(None),
-                Listing.price_usd > 0,
+                Listing.price_canonical.isnot(None),
+                Listing.price_canonical > 0,
             ).distinct().all()
         ]
 
         for fig_id in figure_ids:
             try:
-                all_listings = session.query(Listing.price_usd).filter(
+                all_listings = session.query(Listing.price_canonical).filter(
                     Listing.figure_id == fig_id,
-                    Listing.price_usd.isnot(None),
-                    Listing.price_usd > 0,
+                    Listing.price_canonical.isnot(None),
+                    Listing.price_canonical > 0,
                 ).all()
 
                 prices = sorted([float(r[0]) for r in all_listings])
@@ -1205,8 +1532,8 @@ def scrape_rakuma_prices(self, batch_size: int = 30) -> dict:
 
                             matched += 1
 
-                            # Calculate USD price
-                            price_usd = round(r["price"] / 149.5, 2)
+                            # Compute the canonical TWD value used by snapshot ranking.
+                            price_canonical = round(_to_canonical_twd(r["price"], "JPY"), 2)
 
                             # Create listing
                             from datetime import datetime, timezone
@@ -1221,7 +1548,7 @@ def scrape_rakuma_prices(self, batch_size: int = 30) -> dict:
                                 title=r["title"],
                                 price=r["price"],
                                 currency="JPY",
-                                price_usd=price_usd,
+                                price_canonical=price_canonical,
                                 condition=r.get("condition", "used"),
                                 is_sold=True,
                                 sold_at=sold_at,
@@ -1260,11 +1587,35 @@ app.conf.beat_schedule = {
         "schedule": 86400,  # every 24 hours
         "kwargs": {"batch_size": 500, "min_price_jpy": 0},
     },
-    # Yahoo scraper disabled
-    # "scrape-yahoo-every-24h": {
-    #     "task": "scrape_yahoo_prices",
+    # Yahoo scraper — LLM-validated matching (see llm_match.py).
+    # batch_size 300→120 (2026-07-01): with the refresh-oriented selection now
+    # feeding it POPULAR figures that actually return candidates (~84% produce a
+    # listing vs the old ~0.3%), each figure costs ~20s of real search+LLM work
+    # instead of a fast 0-candidate skip. 120 keeps the run ~45 min; STALE_DAYS=21
+    # means the top ~2,500 figures by views cycle back for fresh prices ~monthly.
+    "scrape-yahoo-every-24h": {
+        "task": "scrape_yahoo_prices",
+        "schedule": 86400,
+        "kwargs": {"batch_size": 120},
+    },
+    # Mercari scraper — Playwright-driven. Runs every 12h since Mercari has
+    # ~3-5× more daily sold listings than Yahoo and is the main data moat.
+    "scrape-mercari-every-12h": {
+        "task": "scrape_mercari_prices",
+        "schedule": 43200,
+        "kwargs": {"batch_size": 30},
+    },
+    # AmiAmi preowned — DISABLED as an automated source. The reverse-pull task
+    # works, but AmiAmi's Cloudflare bans the server IP after ~50 requests, and
+    # matching AmiAmi's English-only titles against our JP/CN figure names tops
+    # out at ~92% accuracy (the LLM cannot reliably equate cross-lingual
+    # character names it doesn't know). It is kept as a MANUAL backfill tool:
+    # pull from a clean IP, run scrape_amiami_preowned, human-review the ~8%
+    # questionable matches before they go live. One backfill of 72 verified
+    # listings was done 2026-05-17.
+    # "scrape-amiami-every-24h": {
+    #     "task": "scrape_amiami_preowned",
     #     "schedule": 86400,
-    #     "kwargs": {"batch_size": 30},
     # },
     # Mercari disabled — requires Playwright browser rendering
     # "scrape-mercari-every-12h": {
@@ -1280,6 +1631,19 @@ app.conf.beat_schedule = {
     "refresh-prices-every-15m": {
         "task": "refresh_current_prices",
         "schedule": 900,  # every 15 minutes
+    },
+    # Hpoi new-release discovery — weekly. order="new" surfaces the most
+    # recently-ADDED Hpoi entries (id desc); dedup by source_id (hpoi_id) makes
+    # re-scans idempotent, so the 20-page (~600 item) window gives ample
+    # week-to-week overlap and nothing slips between runs. This is the ONLY task
+    # that creates new figure rows — the daily enrich_figures task then fills in
+    # image/manufacturer/character/etc. for the freshly-created shells
+    # (it targets image_url IS NULL AND source_id IS NOT NULL). Mon 03:00 UTC
+    # (= 11:00 Asia/Taipei); beat runs in UTC (see app.conf.timezone above).
+    "import-hpoi-new-weekly": {
+        "task": "import_hpoi_catalog",
+        "schedule": crontab(day_of_week=1, hour=3, minute=0),
+        "kwargs": {"order": "new", "max_pages": 20},
     },
     # Rakuma scraper disabled until matching is improved
     # "scrape-rakuma-every-12h": {

@@ -59,6 +59,14 @@ class Figure(Base):
     series: Mapped[str | None] = mapped_column(String(300))
     manufacturer: Mapped[str | None] = mapped_column(String(300))
     character_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("characters.id"))
+    # franchise_id is denormalised onto figure for two reasons:
+    #  - editors want to batch-edit franchise independently of character (their
+    #    mental model and how every figure DB stores it).
+    #  - lets us have figures with known franchise but unknown character.
+    # Initially backfilled from character.franchise_id (kept in sync by
+    # admin_update_figure / batch endpoints when character changes), but editors
+    # CAN deliberately have them drift if they need to.
+    franchise_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("franchises.id"))
     version_name: Mapped[str | None] = mapped_column(String(500))  # e.g. "feat. 米山舞", "Happy 16th Birthday"
     scale: Mapped[str | None] = mapped_column(String(50))
     release_year: Mapped[int | None] = mapped_column(Integer)
@@ -71,6 +79,11 @@ class Figure(Base):
     # Detail fields from Hpoi
     sculptor: Mapped[str | None] = mapped_column(Text)
     painter: Mapped[str | None] = mapped_column(Text)
+    # Illustrator / 原画 — character designer / original artwork artist (often
+    # distinct from sculptor; e.g. Nardack draws the design, someone else
+    # sculpts). Not on Hpoi as a per-figure attribute so this lives on the
+    # editor/submitter path, not the enrich-from-Hpoi path.
+    illustrator: Mapped[str | None] = mapped_column(Text)
     dimensions: Mapped[str | None] = mapped_column(Text)
     material: Mapped[str | None] = mapped_column(Text)
     gender: Mapped[str | None] = mapped_column(Text)
@@ -78,12 +91,17 @@ class Figure(Base):
     age_rating: Mapped[str | None] = mapped_column(Text)
     release_date: Mapped[str | None] = mapped_column(Text)
     reissue_dates: Mapped[str | None] = mapped_column(Text)
+    # External reference to hpoi.net entry, kept as a hint for editors/admins.
+    hpoi_link: Mapped[str | None] = mapped_column(Text)
+    # Manufacturer's official product page URL — editor-curated.
+    official_url: Mapped[str | None] = mapped_column(Text)
     view_count: Mapped[int | None] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     character: Mapped["Character | None"] = relationship(back_populates="figures")
+    franchise: Mapped["Franchise | None"] = relationship(foreign_keys=[franchise_id])
     listings: Mapped[list["Listing"]] = relationship(back_populates="figure")
     price_snapshots: Mapped[list["PriceSnapshot"]] = relationship(
         back_populates="figure"
@@ -106,7 +124,7 @@ class Listing(Base):
     title: Mapped[str | None] = mapped_column(String(500))
     price: Mapped[int | None] = mapped_column(Integer)
     currency: Mapped[str | None] = mapped_column(String(10))
-    price_usd: Mapped[float | None] = mapped_column(Float)
+    price_canonical: Mapped[float | None] = mapped_column(Float)
     condition: Mapped[str | None] = mapped_column(String(50))
     is_sold: Mapped[bool] = mapped_column(Boolean, default=False)
     listed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -185,9 +203,14 @@ class FigureSubmission(Base):
     series: Mapped[str | None] = mapped_column(String(300))
     sculptor: Mapped[str | None] = mapped_column(Text)
     painter: Mapped[str | None] = mapped_column(Text)
+    illustrator: Mapped[str | None] = mapped_column(Text)
     dimensions: Mapped[str | None] = mapped_column(Text)
     gender: Mapped[str | None] = mapped_column(Text)
     release_date: Mapped[str | None] = mapped_column(Text)
+    # Optional hpoi.net reference URL provided by the submitter.
+    hpoi_link: Mapped[str | None] = mapped_column(Text)
+    # Manufacturer's official product page URL provided by the submitter.
+    official_url: Mapped[str | None] = mapped_column(Text)
     # Review status
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, approved, rejected
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -239,10 +262,13 @@ class Order(Base):
     figure_id: Mapped[int] = mapped_column(Integer, ForeignKey("figures.id"), nullable=False)
     order_type: Mapped[str] = mapped_column(String(10), nullable=False)
     price: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str | None] = mapped_column(String(10))
     condition: Mapped[str] = mapped_column(String(50), nullable=False)
+    contact: Mapped[str | None] = mapped_column(String(200))
     notes: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="active")
     matched_with_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("orders.id"))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

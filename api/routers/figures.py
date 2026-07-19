@@ -1,4 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+_TW = ZoneInfo("Asia/Taipei")
 
 from fastapi import Request, APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, or_, select, case, cast, Float
@@ -45,13 +47,16 @@ def classify_condition(condition: str | None) -> str:
     return "used"
 
 
-# Approximate rates for backend price_change_pct calculation
-# Frontend does real-time conversion — this is only for backend sorting/comparison
-_RATES_TO_USD = {"JPY": 1/149.5, "TWD": 1/32.2, "USD": 1, "CNY": 1/7.25}
-
-def _retail_to_usd(price, currency="JPY"):
-    if not price: return 0
-    return price * _RATES_TO_USD.get(currency or "JPY", 1/149.5)
+# Currency helpers live in api/currency.py — see that module for full docs.
+# Locally aliased to keep call sites short.
+from currency import (
+    VALID_CURRENCIES as _VALID_CURRENCIES,
+    aggregate_prices as _aggregate_prices,
+    get_live_rates as _get_live_rates,
+    normalize_currency as _normalize_currency,
+    retail_to_display as _retail_to_display,
+    to_display as _to_display,
+)
 
 
 # Currency-aware price threshold: ~1000 TWD equivalent
@@ -83,78 +88,64 @@ def _price_above_threshold():
 
 async def recalculate_figure_snapshots(figure_id: int, db):
     """Recalculate all snapshots for a figure from its current listings.
-    Called after adding or deleting listings."""
-    from datetime import date as date_type
-    from statistics import median as _median
+    Called after adding or deleting listings.
+
+    Snapshots cache aggregates in **TWD** (the platform's canonical currency, since
+    almost all users are Taiwan-based). Cross-currency listings are converted via
+    live rates at aggregation time. Display pages convert TWD→user_currency at
+    query time via `currency.to_display`.
+    """
     from collections import defaultdict
-    
-    today = date_type.today()
-    
-    # Delete ALL existing snapshots for this figure (rebuild from scratch)
-    await db.execute(
-        delete(PriceSnapshot).where(PriceSnapshot.figure_id == figure_id)
-    )
-    
-    # Get all listings for this figure
+    today = date.today()
+    rates = await _get_live_rates()
+
+    # Rebuild from scratch (cheaper than diffing).
+    await db.execute(delete(PriceSnapshot).where(PriceSnapshot.figure_id == figure_id))
+
     listings_result = await db.execute(
-        select(Listing.price_usd, Listing.condition, Listing.sold_at, Listing.scraped_at)
-        .where(Listing.figure_id == figure_id, Listing.price_usd.isnot(None), Listing.price_usd > 0)
+        select(Listing.price, Listing.currency, Listing.condition, Listing.sold_at, Listing.scraped_at)
+        .where(Listing.figure_id == figure_id, Listing.price.isnot(None), Listing.price > 0)
     )
     listings = listings_result.all()
-    
+
     if not listings:
-        # No listings — update figure prices to None
+        # No listings — clear figure-level cached prices.
         fig = await db.execute(select(Figure).where(Figure.id == figure_id))
         f = fig.scalar_one_or_none()
         if f:
             f.avg_price = None
             f.median_price = None
         return
-    
-    # Group listings by date (use sold_at if available, else today)
-    by_date = defaultdict(lambda: defaultdict(list))
-    for price_usd, condition, sold_at, scraped_at in listings:
+
+    # Convert each listing into the canonical TWD value once, then bucket.
+    by_date: dict[date, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    all_twd: list[float] = []
+    for price, currency, condition, sold_at, scraped_at in listings:
+        twd = _to_display(price, currency, "TWD", rates)
+        if twd is None or twd <= 0:
+            continue
         d = sold_at.date() if sold_at else (scraped_at.date() if scraped_at else today)
         cond = condition or "used"
-        by_date[d]["all"].append(float(price_usd))
-        by_date[d][cond].append(float(price_usd))
-    
-    # Create snapshot for each date + condition
+        by_date[d]["all"].append(twd)
+        by_date[d][cond].append(twd)
+        all_twd.append(twd)
+
     for snap_date, conds in by_date.items():
         for cond, prices in conds.items():
-            prices.sort()
-            n = len(prices)
-            if n >= 5:
-                tc = max(1, n // 10)
-                avg_p = round(sum(prices[tc:-tc]) / len(prices[tc:-tc]), 2)
-            else:
-                avg_p = round(sum(prices) / n, 2)
-            med_p = round(_median(prices), 2)
-            
-            snap = PriceSnapshot(
-                figure_id=figure_id, date=snap_date,
-                avg_price=avg_p, median_price=med_p,
-                min_price=round(min(prices), 2), max_price=round(max(prices), 2),
-                sample_count=n, condition=cond,
-            )
-            db.add(snap)
-    
-    # Also create a "today" snapshot from ALL listings (for current price display)
-    all_prices = sorted([float(r[0]) for r in listings])
-    n = len(all_prices)
-    if n >= 5:
-        tc = max(1, n // 10)
-        avg_all = round(sum(all_prices[tc:-tc]) / len(all_prices[tc:-tc]), 2)
-    else:
-        avg_all = round(sum(all_prices) / n, 2)
-    med_all = round(_median(all_prices), 2)
-    
-    # Update figure cached prices
+            agg = _aggregate_prices(prices, trim_pct=10)
+            db.add(PriceSnapshot(
+                figure_id=figure_id, date=snap_date, condition=cond,
+                avg_price=agg["avg"], median_price=agg["median"],
+                min_price=agg["min"], max_price=agg["max"], sample_count=agg["count"],
+            ))
+
+    # Figure-level cached prices: trimmed-mean across every listing, in TWD.
+    overall = _aggregate_prices(all_twd, trim_pct=10)
     fig = await db.execute(select(Figure).where(Figure.id == figure_id))
     f = fig.scalar_one_or_none()
     if f:
-        f.avg_price = avg_all
-        f.median_price = med_all
+        f.avg_price = overall["avg"]
+        f.median_price = overall["median"]
 
 
 @router.get("", response_model=SearchResult)
@@ -162,15 +153,25 @@ async def search_figures(
     q: str = Query("", description="Search query"),
     scale: str = Query("", description="Filter by scale"),
     manufacturer: str = Query("", description="Filter by manufacturer"),
+    series: str = Query("", description="Filter by series (locked-field — like manufacturer)"),
+    franchise: str = Query("", description="Filter by franchise (作品) name — locked-field"),
     sculptor: str = Query("", description="Filter by sculptor"),
     character: str = Query("", description="Filter by exact character name"),
     painter: str = Query("", description="Filter by painter"),
+    illustrator: str = Query("", description="Filter by illustrator"),
     figure_type: str = Query("", description="Filter by figure type"),
     sort: str = Query("", description="Sort: price_asc, price_desc, release_desc, name_asc"),
     skip: int = Query(0, ge=0),
     limit: int = Query(24, ge=1, le=100),
+    currency: str = Query("TWD", description="Display currency for returned prices"),
     db: AsyncSession = Depends(get_db),
 ) -> SearchResult:
+    # Display currency: snapshots are cached in TWD (the platform's canonical unit);
+    # convert at query time using live rates so cards everywhere show the same
+    # number for the same figure. Always fetch live rates so retail (often JPY)
+    # gets accurate conversion even when the display currency is TWD.
+    display_currency = _normalize_currency(currency, default="TWD")
+    rates = await _get_live_rates()
     # Subquery to get the latest snapshot date per figure
     latest_date = (
         select(
@@ -197,10 +198,14 @@ async def search_figures(
         .subquery()
     )
 
+    # Franchise is read from Figure.franchise_id (denormalised since 2026-05-24)
+    # so editor batch-edits to franchise reflect in display without altering
+    # the figure's character or other figures sharing it. Backfilled from
+    # character.franchise_id so historical data is consistent.
     base_query = (
         select(Figure, func.coalesce(Character.name_zh, Character.name).label("char_name"), Franchise.name.label("fran_name"))
         .outerjoin(Character, Figure.character_id == Character.id)
-        .outerjoin(Franchise, Character.franchise_id == Franchise.id)
+        .outerjoin(Franchise, Figure.franchise_id == Franchise.id)
     )
 
     # Build filter conditions
@@ -267,10 +272,25 @@ async def search_figures(
         filter_conditions.append(Figure.scale == scale)
     if manufacturer:
         filter_conditions.append(Figure.manufacturer.ilike(f"%{manufacturer}%"))
+    if series:
+        filter_conditions.append(Figure.series.ilike(f"%{series}%"))
+    if franchise:
+        # `franchise` matches the series-level franchise (e.g. 約會大作戰).
+        # Two-pronged: either Franchise.name OR name_zh matches, OR the figure's
+        # `series` text contains it — covers both linked franchises and free-text entries.
+        filter_conditions.append(
+            or_(
+                Franchise.name.ilike(f"%{franchise}%"),
+                Franchise.name_zh.ilike(f"%{franchise}%"),
+                Figure.series.ilike(f"%{franchise}%"),
+            )
+        )
     if sculptor:
         filter_conditions.append(Figure.sculptor.ilike(f"%{sculptor}%"))
     if painter:
         filter_conditions.append(Figure.painter.ilike(f"%{painter}%"))
+    if illustrator:
+        filter_conditions.append(Figure.illustrator.ilike(f"%{illustrator}%"))
     if figure_type:
         filter_conditions.append(Figure.figure_type.ilike(f"%{figure_type}%"))
     if character:
@@ -279,12 +299,14 @@ async def search_figures(
     for cond in filter_conditions:
         base_query = base_query.where(cond)
 
-    # Count total
+    # Count total — must use the same Franchise join path as base_query so
+    # the count matches the rows we'd return. Was reading via character.franchise
+    # while base_query was already on figure.franchise_id — inconsistent on drift.
     count_base = (
         select(func.count(Figure.id))
         .select_from(Figure)
         .outerjoin(Character, Figure.character_id == Character.id)
-        .outerjoin(Franchise, Character.franchise_id == Franchise.id)
+        .outerjoin(Franchise, Figure.franchise_id == Franchise.id)
     )
     for cond in filter_conditions:
         count_base = count_base.where(cond)
@@ -302,11 +324,17 @@ async def search_figures(
         )
     )
 
-    # Sort price expression: use median_price, fallback to retail_price converted to USD
-    sort_price = func.coalesce(
-        latest_snapshot.c.median_price,
-        cast(Figure.retail_price, Float) / 149.5
+    # Sort price expression. snapshot.median_price is the canonical USD value (or TWD
+    # after the canonical migration); fallback uses a SQL CASE matching the central
+    # FALLBACK_RATES so non-JPY retails (TWD/CNY/USD) sort correctly.
+    from sqlalchemy import case as _sort_case
+    _retail_to_usd_sql = cast(Figure.retail_price, Float) / _sort_case(
+        (Figure.retail_currency == "TWD", 32.2),
+        (Figure.retail_currency == "CNY", 7.25),
+        (Figure.retail_currency == "USD", 1.0),
+        else_=149.5,  # JPY default
     )
+    sort_price = func.coalesce(latest_snapshot.c.median_price, _retail_to_usd_sql)
 
     # Apply sorting
     if sort == "price_asc":
@@ -348,19 +376,32 @@ async def search_figures(
     result = await db.execute(query)
     rows = result.all()
 
+    # Helper: convert a TWD-canonical price to display currency. Same-currency short-circuits.
+    def _conv(p):
+        if p is None:
+            return None
+        if display_currency == "TWD":
+            return float(p)
+        return _to_display(p, "TWD", display_currency, rates)
+
     figures = []
     for row in rows:
         figure = row[0]  # Figure object
         char_name = row[1]  # Character.name_zh
         fran_name = row[2]  # Franchise.name
-        current_avg = row[3]
-        current_median = row[4]
-        # Calculate price change % vs retail
+        current_avg = _conv(row[3])
+        current_median = _conv(row[4])
+        # price_change_pct vs retail — both sides in display currency.
+        # `_retail_to_display` handles USD pass-through internally via FALLBACK_RATES,
+        # so we no longer need a separate USD-special-case path.
         price_change_pct = None
         if current_median is not None and figure.retail_price:
-            retail_usd = _retail_to_usd(figure.retail_price, getattr(figure, "retail_currency", "JPY"))
-            if retail_usd > 0:
-                price_change_pct = round((current_median - retail_usd) / retail_usd * 100, 1)
+            retail_d = _retail_to_display(
+                figure.retail_price, getattr(figure, "retail_currency", "JPY"),
+                display_currency, rates or {},
+            )
+            if retail_d and retail_d > 0:
+                price_change_pct = round((current_median - retail_d) / retail_d * 100, 1)
 
         fig_out = FigureOut(
             id=figure.id,
@@ -376,6 +417,7 @@ async def search_figures(
         retail_currency=figure.retail_currency or "JPY",
             sculptor=figure.sculptor,
             painter=figure.painter,
+            illustrator=figure.illustrator,
             dimensions=figure.dimensions,
             material=figure.material,
             gender=figure.gender,
@@ -383,6 +425,7 @@ async def search_figures(
             age_rating=figure.age_rating,
             release_date=figure.release_date,
             reissue_dates=figure.reissue_dates,
+            official_url=figure.official_url,
             character_name=char_name,
             franchise_name=fran_name,
             current_avg_price=current_avg,
@@ -392,31 +435,40 @@ async def search_figures(
         )
         figures.append(fig_out)
 
-    # Fallback: figures with listings but no snapshots
+    # Fallback: figures with listings but no snapshots — recompute from raw (price, currency)
+    # so the result honours `display_currency` instead of leaking USD numbers.
     no_price_ids = [f.id for f in figures if f.current_avg_price is None and f.current_median_price is None]
     if no_price_ids:
-        from statistics import median as _median
         for fid in no_price_ids:
             listing_result = await db.execute(
-                select(Listing.price_usd).where(
+                select(Listing.price, Listing.currency).where(
                     Listing.figure_id == fid,
-                    Listing.price_usd.isnot(None),
-                    Listing.price_usd > 0,
+                    Listing.price.isnot(None),
+                    Listing.price > 0,
                 )
             )
-            prices = [float(r[0]) for r in listing_result.all()]
-            if prices:
-                avg_p = round(sum(prices) / len(prices), 2)
-                med_p = round(_median(prices), 2)
-                for fig in figures:
-                    if fig.id == fid:
-                        fig.current_avg_price = avg_p
-                        fig.current_median_price = med_p
-                        if fig.retail_price:
-                            retail_usd = _retail_to_usd(fig.retail_price, getattr(fig, "retail_currency", "JPY"))
-                            if retail_usd > 0:
-                                fig.price_change_pct = round((med_p - retail_usd) / retail_usd * 100, 1)
-                        break
+            # rates can be None when display_currency==USD (no live rates fetched).
+            # _to_display handles None gracefully via its internal fallback table.
+            _r = rates or {}
+            converted = [
+                v for (p, c) in listing_result.all()
+                if (v := _to_display(p, c, display_currency, _r)) is not None and v > 0
+            ]
+            if not converted:
+                continue
+            agg = _aggregate_prices(converted, trim_pct=10)
+            for fig in figures:
+                if fig.id == fid:
+                    fig.current_avg_price = agg["avg"]
+                    fig.current_median_price = agg["median"]
+                    if fig.retail_price:
+                        retail_d = _retail_to_display(
+                            fig.retail_price, getattr(fig, "retail_currency", "JPY"),
+                            display_currency, rates or {},
+                        )
+                        if retail_d and retail_d > 0 and agg["median"] is not None:
+                            fig.price_change_pct = round((agg["median"] - retail_d) / retail_d * 100, 1)
+                    break
 
     # Re-rank: more matching tokens = higher rank
     if q and " " in q:
@@ -447,10 +499,18 @@ async def search_figures(
 
 @router.get("/sitemap-ids")
 async def get_sitemap_ids(db: AsyncSession = Depends(get_db)):
-    """Return figure IDs that have at least one listing — for sitemap generation."""
+    """Return all valid figure IDs for sitemap generation.
+
+    Previously only included figures with listings (~1.7K of 37K), pairing with
+    a thin-content noindex on figures without listings. That was overcautious —
+    every figure page has unique product data (name/manufacturer/character/
+    image/JSON-LD Product schema) and is worth being indexed for long-tail
+    discovery. Now: include any figure that has an image (i.e. is a real,
+    presentable entry, not a stub), which is ~37K well under Google's 50K
+    per-sitemap limit."""
     from sqlalchemy import text as _t
     result = await db.execute(_t(
-        "SELECT DISTINCT figure_id FROM listings WHERE figure_id IS NOT NULL ORDER BY figure_id"
+        "SELECT id FROM figures WHERE image_url IS NOT NULL ORDER BY id"
     ))
     return {"ids": [row[0] for row in result.all()]}
 
@@ -458,13 +518,22 @@ async def get_sitemap_ids(db: AsyncSession = Depends(get_db)):
 @router.get("/{figure_id}", response_model=FigureDetail)
 async def get_figure(
     figure_id: int,
+    currency: str = "TWD",
     db: AsyncSession = Depends(get_db),
 ) -> FigureDetail:
-    # Fetch figure with character/franchise
+    # Display currency: convert all aggregates on-the-fly using live rates.
+    # DB stores listings in their original (price, currency); we convert at query time.
+    # Default is TWD (the platform's canonical unit) since this is a Taiwan-focused
+    # site. Other currencies are computed via live exchange rates.
+    display_currency = currency.upper() if currency.upper() in _VALID_CURRENCIES else "TWD"
+    rates = await _get_live_rates()
+    # Fetch figure with character/franchise.
+    # Franchise reads via Figure.franchise_id (denormalised) so editors' batch
+    # edits to franchise reflect in display without changing the character.
     result = await db.execute(
         select(Figure, func.coalesce(Character.name_zh, Character.name).label("char_name"), Franchise.name.label("fran_name"))
         .outerjoin(Character, Figure.character_id == Character.id)
-        .outerjoin(Franchise, Character.franchise_id == Franchise.id)
+        .outerjoin(Franchise, Figure.franchise_id == Franchise.id)
         .where(Figure.id == figure_id)
     )
     row = result.one_or_none()
@@ -473,16 +542,6 @@ async def get_figure(
     figure = row[0]
     char_name = row[1]
     fran_name = row[2]
-
-    # Latest snapshot for current prices
-    snapshot_result = await db.execute(
-        select(PriceSnapshot)
-        .where(PriceSnapshot.figure_id == figure_id)
-        .where(PriceSnapshot.condition == "all")
-        .order_by(PriceSnapshot.date.desc())
-        .limit(1)
-    )
-    latest_snapshot = snapshot_result.scalar_one_or_none()
 
     # Last 5 listings
     listings_result = await db.execute(
@@ -498,30 +557,36 @@ async def get_figure(
             out.sold_at = l.scraped_at
         recent_listings.append(out)
 
-    # Price history: aggregate from raw listings grouped by sold_at date
+    # Price history: aggregate from raw (price, currency) grouped by sold_at date,
+    # converting each listing to display_currency on-the-fly using live rates.
     from collections import defaultdict
-    from statistics import median as _hist_median
     _hist_listings = await db.execute(
-        select(Listing.price_usd, Listing.condition, Listing.sold_at, Listing.scraped_at)
-        .where(Listing.figure_id == figure_id, Listing.price_usd.isnot(None), Listing.price_usd > 0)
+        select(Listing.price, Listing.currency, Listing.condition, Listing.sold_at, Listing.scraped_at)
+        .where(Listing.figure_id == figure_id, Listing.price.isnot(None), Listing.price > 0)
         .order_by(Listing.sold_at.asc().nullslast())
     )
     _by_date: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    for _p, _c, _sold, _scraped in _hist_listings.all():
-        _d = (_sold or _scraped).date() if (_sold or _scraped) else date.today()
+    for _p, _curr, _c, _sold, _scraped in _hist_listings.all():
+        _dt = _sold or _scraped
+        if _dt:
+            # Convert to Taiwan time so chart dates match what Taiwan users see
+            _d = _dt.astimezone(_TW).date() if _dt.tzinfo else _dt.date()
+        else:
+            _d = date.today()
         _date_str = str(_d)
         _cond = _c if _c in ("sealed", "opened", "used", "damaged") else "used"
-        _by_date[_date_str]["all"].append(float(_p))
-        _by_date[_date_str][_cond].append(float(_p))
+        _converted = _to_display(_p, _curr, display_currency, rates)
+        if _converted is None or _converted <= 0:
+            continue
+        _by_date[_date_str]["all"].append(_converted)
+        _by_date[_date_str][_cond].append(_converted)
 
     def _make_snap(d_str, prices):
-        prices_s = sorted(prices)
-        n = len(prices_s)
-        avg = round(sum(prices_s) / n, 2)
-        med = round(_hist_median(prices_s), 2)
+        agg = _aggregate_prices(prices)
         return PriceSnapshotOut(
-            date=date.fromisoformat(d_str), avg_price=avg, median_price=med,
-            min_price=round(min(prices_s), 2), max_price=round(max(prices_s), 2), sample_count=n,
+            date=date.fromisoformat(d_str),
+            avg_price=agg["avg"], median_price=agg["median"],
+            min_price=agg["min"], max_price=agg["max"], sample_count=agg["count"],
         )
 
     price_history = []
@@ -535,16 +600,13 @@ async def get_figure(
                 price_history_by_condition[cond] = []
             price_history_by_condition[cond].append(_make_snap(d_str, prices))
 
-    # Condition-based pricing from sold listings (last 90 days)
-    _cutoff = date.today() - timedelta(days=90)
+    # Condition-based pricing from all sold listings (no time window).
+    # Using all-time data keeps the code simple and ensures figures with
+    # infrequent trades always show condition price cards.
     all_listings_result = await db.execute(
         select(Listing).where(
-            Listing.figure_id == figure_id, 
+            Listing.figure_id == figure_id,
             Listing.is_sold == True,
-            or_(
-                Listing.sold_at >= _cutoff,
-                and_(Listing.sold_at.is_(None), Listing.scraped_at >= _cutoff),
-            ),
         )
     )
     all_listings = all_listings_result.scalars().all()
@@ -554,32 +616,25 @@ async def get_figure(
     condition_groups: dict[str, list[float]] = defaultdict(list)
     for listing in all_listings:
         group = classify_condition(listing.condition)
-        price = listing.price_usd if listing.price_usd else None
-        if price:
-            condition_groups[group].append(float(price))
+        # Convert to display currency on-the-fly (preserves original number when same currency).
+        converted = _to_display(listing.price, listing.currency, display_currency, rates)
+        if converted is not None and converted > 0:
+            condition_groups[group].append(converted)
 
     condition_prices = []
     labels = {"sealed": "全新", "opened": "拆檢", "used": "拆擺", "damaged": "瑕疵"}
     for cond, prices in condition_groups.items():
-        if prices:
-            sorted_prices = sorted(prices)
-            n = len(sorted_prices)
-            median = (
-                sorted_prices[n // 2]
-                if n % 2 == 1
-                else (sorted_prices[n // 2 - 1] + sorted_prices[n // 2]) / 2
+        if not prices:
+            continue
+        agg = _aggregate_prices(prices)
+        condition_prices.append(
+            ConditionPriceOut(
+                condition=cond,
+                condition_label=labels.get(cond, cond),
+                avg_price=agg["avg"], median_price=agg["median"],
+                min_price=agg["min"], max_price=agg["max"], sample_count=agg["count"],
             )
-            condition_prices.append(
-                ConditionPriceOut(
-                    condition=cond,
-                    condition_label=labels.get(cond, cond),
-                    avg_price=round(sum(prices) / n, 2),
-                    median_price=round(median, 2),
-                    min_price=round(min(prices), 2),
-                    max_price=round(max(prices), 2),
-                    sample_count=n,
-                )
-            )
+        )
 
     # Related figures: same character, or same franchise
     rel_latest_date = (
@@ -606,14 +661,20 @@ async def get_figure(
     )
 
     def build_related(fig_row) -> FigureRelated:
+        # Snapshot.median_price is in TWD (canonical). Convert to the request's
+        # display currency so FigureCard can format-and-symbol without re-converting.
         f = fig_row[0]
-        median_p = fig_row[1] if len(fig_row) > 1 else None
+        median_twd = fig_row[1] if len(fig_row) > 1 else None
+        median_display = _to_display(median_twd, "TWD", display_currency, rates) if median_twd is not None else None
         pcp = None
-        if median_p is not None and f.retail_price:
-            retail_usd = _retail_to_usd(f.retail_price, getattr(f, "retail_currency", "JPY"))
-            if retail_usd > 0:
-                pcp = round((median_p - retail_usd) / retail_usd * 100, 1)
-        return FigureRelated(id=f.id, name=f.name, image_url=f.image_url, manufacturer=f.manufacturer, retail_price=f.retail_price, retail_currency=f.retail_currency or "JPY", current_median_price=median_p, price_change_pct=pcp)
+        if median_display is not None and f.retail_price:
+            retail_display = _retail_to_display(
+                f.retail_price, getattr(f, "retail_currency", "JPY"),
+                display_currency, rates or {},
+            )
+            if retail_display > 0:
+                pcp = round((median_display - retail_display) / retail_display * 100, 1)
+        return FigureRelated(id=f.id, name=f.name, image_url=f.image_url, manufacturer=f.manufacturer, retail_price=f.retail_price, retail_currency=f.retail_currency or "JPY", current_median_price=median_display, price_change_pct=pcp)
 
     related = []
     if figure.character_id:
@@ -653,36 +714,25 @@ async def get_figure(
             related.extend([build_related(r) for r in franchise_result.all()])
 
     # Calculate price change %
-    # Prefer rolling average from all recent (last 90 days) listings so a single
-    # fresh report with 1 sample doesn't override the "current" stats. Fall back
-    # to latest_snapshot only if we have no listings at all.
-    current_avg = None
-    current_median = None
-    listing_prices = [float(l.price_usd) for l in all_listings if l.price_usd]
-    if listing_prices:
-        listing_prices_sorted = sorted(listing_prices)
-        n = len(listing_prices_sorted)
-        # Trim 10% from each end when sample is large to drop outliers
-        if n >= 5:
-            tc = max(1, n // 10)
-            trimmed = listing_prices_sorted[tc:-tc]
-            current_avg = round(sum(trimmed) / len(trimmed), 2)
-        else:
-            current_avg = round(sum(listing_prices_sorted) / n, 2)
-        if n % 2 == 1:
-            current_median = round(listing_prices_sorted[n // 2], 2)
-        else:
-            current_median = round((listing_prices_sorted[n // 2 - 1] + listing_prices_sorted[n // 2]) / 2, 2)
-    elif latest_snapshot:
-        current_avg = latest_snapshot.avg_price
-        current_median = latest_snapshot.median_price
+    # Current price from all-time sold listings (no window), in display_currency.
+    # Outliers are trimmed 10% from each end when sample is large enough.
+    listing_prices = [
+        v for l in all_listings
+        if (v := _to_display(l.price, l.currency, display_currency, rates)) is not None and v > 0
+    ]
+    _summary = _aggregate_prices(listing_prices, trim_pct=10)
+    current_avg = _summary["avg"]
+    current_median = _summary["median"]
     price_change_pct = None
     if current_median is not None and figure.retail_price:
-        retail_usd = _retail_to_usd(figure.retail_price, getattr(figure, "retail_currency", "JPY"))
-        if retail_usd > 0:
-            price_change_pct = round((current_median - retail_usd) / retail_usd * 100, 1)
+        retail_in_display = _retail_to_display(
+            figure.retail_price, getattr(figure, "retail_currency", "JPY"),
+            display_currency, rates,
+        )
+        if retail_in_display > 0:
+            price_change_pct = round((current_median - retail_in_display) / retail_in_display * 100, 1)
 
-    # Calculate price trend from last 2 snapshots
+    # Calculate price trend from last 2 snapshots (also in display_currency)
     price_trend_pct = None
     if len(price_history) >= 2:
         latest_p = price_history[-1].avg_price
@@ -691,7 +741,11 @@ async def get_figure(
             price_trend_pct = round((latest_p - prev_p) / prev_p * 100, 1)
     elif all_listings and len(all_listings) >= 2:
         sold_prices = sorted(
-            [(float(l.price_usd), l.scraped_at) for l in all_listings if l.price_usd],
+            [
+                (v, l.scraped_at)
+                for l in all_listings
+                if (v := _to_display(l.price, l.currency, display_currency, rates)) is not None and v > 0
+            ],
             key=lambda x: x[1],
             reverse=True,
         )
@@ -703,14 +757,13 @@ async def get_figure(
 
     # Synthetic price_history entry if empty but listings exist
     if not price_history and current_avg is not None:
-        from datetime import date as date_type
         price_history = [PriceSnapshotOut(
-            date=date_type.today(),
+            date=date.today(),
             avg_price=current_avg,
             median_price=current_median,
-            min_price=round(min(listing_prices), 2) if listing_prices else None,
-            max_price=round(max(listing_prices), 2) if listing_prices else None,
-            sample_count=len(listing_prices) if listing_prices else 0,
+            min_price=_summary["min"],
+            max_price=_summary["max"],
+            sample_count=_summary["count"],
         )]
 
     # Get aggregate rating
@@ -721,6 +774,12 @@ async def get_figure(
     _rr = _rating_result.first()
     _rating_avg = float(_rr[0]) if _rr and _rr[0] else None
     _rating_count = _rr[1] if _rr else 0
+
+    # Pre-compute retail in display currency so frontend doesn't need to convert.
+    retail_display = (
+        round(_retail_to_display(figure.retail_price, figure.retail_currency, display_currency, rates), 2)
+        if figure.retail_price else None
+    )
 
     return FigureDetail(
         id=figure.id,
@@ -734,8 +793,10 @@ async def get_figure(
         original_name=figure.original_name,
         retail_price=figure.retail_price,
         retail_currency=figure.retail_currency or "JPY",
+        retail_price_display=retail_display,
         sculptor=figure.sculptor,
         painter=figure.painter,
+        illustrator=figure.illustrator,
         dimensions=figure.dimensions,
         material=figure.material,
         gender=figure.gender,
@@ -743,6 +804,8 @@ async def get_figure(
         age_rating=figure.age_rating,
         release_date=figure.release_date,
         reissue_dates=figure.reissue_dates,
+        hpoi_link=figure.hpoi_link,
+        official_url=figure.official_url,
         character_name=char_name,
         franchise_name=fran_name,
         current_avg_price=current_avg,
@@ -793,8 +856,10 @@ async def submit_price_report(
     if report.currency not in ("TWD", "JPY", "CNY", "USD"):
         raise HTTPException(status_code=400, detail="Invalid currency")
 
-    result = await db.execute(select(Figure.id).where(Figure.id == figure_id))
-    if not result.scalar_one_or_none():
+    # Load figure once (used for retail comparison and for listing title)
+    fig_result = await db.execute(select(Figure).where(Figure.id == figure_id))
+    figure = fig_result.scalar_one_or_none()
+    if not figure:
         raise HTTPException(status_code=404, detail="Figure not found")
 
     # Rate limit: max 10 reports per figure per hour
@@ -810,20 +875,18 @@ async def submit_price_report(
     if recent_count >= 10:
         raise HTTPException(status_code=429, detail="Too many reports for this figure. Please try later.")
 
-    RATES_TO_JPY = {"JPY": 1, "TWD": 149.5 / 32.2, "USD": 149.5, "CNY": 149.5 / 7.25}
-
-    fig_result = await db.execute(select(Figure).where(Figure.id == figure_id))
-    figure = fig_result.scalar_one_or_none()
+    # Outlier detection: convert everything to JPY (or any common pivot) and compare.
+    # Uses fallback rates from the central currency module — outlier thresholds are
+    # rate-insensitive so we don't bother fetching live rates here.
+    def _to_jpy(p, c):
+        return _to_display(p, c, "JPY", {}) or 0.0
 
     flagged = False
     flag_reason = ""
 
     if figure and figure.retail_price:
-        rate = RATES_TO_JPY.get(report.currency, 1)
-        price_jpy_for_check = report.price * rate
-        # Convert figure retail_price to JPY for comparison
-        retail_rate = RATES_TO_JPY.get(figure.retail_currency or "JPY", 1)
-        retail_jpy = figure.retail_price * retail_rate
+        price_jpy_for_check = _to_jpy(report.price, report.currency)
+        retail_jpy = _to_jpy(figure.retail_price, figure.retail_currency or "JPY")
         ratio = price_jpy_for_check / retail_jpy if retail_jpy > 0 else 1
         if ratio > 5.0:
             flagged = True
@@ -840,15 +903,10 @@ async def submit_price_report(
     )
     existing_reports = existing.all()
     if len(existing_reports) >= 3:
-        prices_jpy = []
-        for ep, ec in existing_reports:
-            r = RATES_TO_JPY.get(ec, 1)
-            prices_jpy.append(float(ep) * r)
-        prices_jpy.sort()
+        prices_jpy = sorted(_to_jpy(ep, ec) for ep, ec in existing_reports)
         median_jpy = prices_jpy[len(prices_jpy) // 2]
         if median_jpy > 0:
-            rate = RATES_TO_JPY.get(report.currency, 1)
-            price_jpy_for_check = report.price * rate
+            price_jpy_for_check = _to_jpy(report.price, report.currency)
             dev = abs(price_jpy_for_check - median_jpy) / median_jpy
             if dev > 1.0:
                 flagged = True
@@ -866,30 +924,32 @@ async def submit_price_report(
     db.add(user_report)
     await db.flush()  # get user_report.id
 
-    # Parse and validate sold_at date (server-side)
+    # Parse and validate sold_at date (server-side). Clamp to [today-10y, today].
     _sold_at = None
     if report.sold_at:
         try:
             from datetime import datetime as _dt, timedelta as _td, timezone as _tz
             _sold_at = _dt.fromisoformat(report.sold_at)
-            # Server uses Taiwan time (UTC+8) for "today"
             _tw = _tz(_td(hours=8))
             _now_tw = _dt.now(_tw)
             _today_tw = _now_tw.replace(hour=23, minute=59, second=59)
-            # Make sold_at timezone-aware for comparison
+            _earliest = _now_tw - _td(days=365 * 10)
             if _sold_at.tzinfo is None:
                 _sold_at = _sold_at.replace(tzinfo=_tw)
-            
-            # Only reject future dates — no limit on how old
+
             if _sold_at > _today_tw:
-                _sold_at = _now_tw  # clamp to today
+                _sold_at = _now_tw  # clamp future → today
+            elif _sold_at < _earliest:
+                _sold_at = None  # reject implausibly old dates
         except (ValueError, TypeError):
             _sold_at = None
 
-    # If not flagged, also create a listing so it affects price calculations
+    # If not flagged, also create a listing so it affects price calculations.
     if not flagged:
-        RATES_TO_USD = {"JPY": 1/149.5, "TWD": 1/32.2, "USD": 1, "CNY": 1/7.25}
-        price_usd = report.price * RATES_TO_USD.get(report.currency, 1)
+        # The `price_canonical` column is a legacy name — its contents are now the canonical
+        # TWD-denominated value used by snapshot ranking and trending SQL.
+        rates = await _get_live_rates()
+        canonical_twd = _to_display(report.price, report.currency, "TWD", rates) or 0.0
         condition_map = {"sealed": "sealed", "opened": "opened", "displayed": "used", "damaged": "damaged"}
         listing = Listing(
             figure_id=figure_id,
@@ -898,7 +958,7 @@ async def submit_price_report(
             title=figure.name + " - " + (report.platform or "社群回報"),
             price=report.price,
             currency=report.currency,
-            price_usd=round(price_usd, 2),
+            price_canonical=round(canonical_twd, 2),
             condition=condition_map.get(report.condition, "used"),
             is_sold=True,
             notes=report.notes,
@@ -909,8 +969,12 @@ async def submit_price_report(
 
     # Recalculate snapshots after adding new listing
     if not flagged:
-        await recalculate_figure_snapshots(figure_id, db)
-    
+        try:
+            await recalculate_figure_snapshots(figure_id, db)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Snapshot recalc failed for figure_id=%s", figure_id)
+
     await db.commit()
 
     return {"status": "success", "message": "感謝回報！" if not flagged else "已收到，價格將經過審核。"}
@@ -941,13 +1005,30 @@ async def rate_figure(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user_optional),
 ):
-    """Rate a figure 1-5. One rating per user (or per IP if anonymous)."""
+    """Rate a figure 1-5. One rating per user (or per IP if anonymous).
+    Rate-limited to 30 ratings per IP per hour to curb bulk manipulation."""
     from sqlalchemy import text as sql_text
     rating = body.get("rating")
     if not isinstance(rating, int) or rating < 1 or rating > 5:
         raise HTTPException(status_code=400, detail="Rating must be 1-5")
 
     ip = get_real_ip(request)
+
+    # Rate limit: 30 ratings per IP per hour (Redis + in-memory fallback)
+    from rate_limit import check_rate_limit, get_redis
+    _redis = await get_redis()
+    if not await check_rate_limit(_redis, f"rating:{ip}", limit=30, window_seconds=3600):
+        if _redis is not None:
+            try:
+                await _redis.aclose()
+            except Exception:
+                pass
+        raise HTTPException(status_code=429, detail="評分太頻繁，請稍後再試")
+    if _redis is not None:
+        try:
+            await _redis.aclose()
+        except Exception:
+            pass
 
     if current_user:
         # Upsert by user_id
@@ -1003,13 +1084,17 @@ async def add_figure_note(
     """Add a community note to a figure."""
     content_text = (body.get("content") or "").strip()
     link_url = (body.get("link_url") or "").strip() or None
-    
+
     if not content_text:
         raise HTTPException(status_code=400, detail="Content is required")
     if len(content_text) > 500:
         raise HTTPException(status_code=400, detail="Content too long (max 500 chars)")
-    if link_url and len(link_url) > 1000:
-        raise HTTPException(status_code=400, detail="URL too long")
+    if link_url:
+        if len(link_url) > 1000:
+            raise HTTPException(status_code=400, detail="URL too long")
+        # Only allow http(s) — blocks javascript:, data:, etc.
+        if not (link_url.lower().startswith("http://") or link_url.lower().startswith("https://")):
+            raise HTTPException(status_code=400, detail="連結必須以 http:// 或 https:// 開頭")
     
     # Check figure exists
     fig = await db.execute(select(Figure.id).where(Figure.id == figure_id))
@@ -1112,9 +1197,27 @@ async def report_figure_note(
 @router.post("/submissions", response_model=FigureSubmissionOut)
 async def submit_figure(
     submission: FigureSubmissionIn,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> FigureSubmissionOut:
-    """Submit a new figure that's not yet in the database."""
+    """Submit a new figure that's not yet in the database.
+    Rate-limited to 5 submissions per IP per hour."""
+    ip = get_real_ip(request)
+    from rate_limit import check_rate_limit, get_redis
+    _redis = await get_redis()
+    if not await check_rate_limit(_redis, f"submit_figure:{ip}", limit=5, window_seconds=3600):
+        if _redis is not None:
+            try:
+                await _redis.aclose()
+            except Exception:
+                pass
+        raise HTTPException(status_code=429, detail="提交太頻繁，請稍後再試")
+    if _redis is not None:
+        try:
+            await _redis.aclose()
+        except Exception:
+            pass
+
     from db.models import FigureSubmission
     new_sub = FigureSubmission(
         name=submission.name,
@@ -1135,9 +1238,12 @@ async def submit_figure(
         material=submission.material,
         sculptor=submission.sculptor,
         painter=submission.painter,
+        illustrator=submission.illustrator,
         dimensions=submission.dimensions,
         gender=submission.gender,
         release_date=submission.release_date,
+        hpoi_link=submission.hpoi_link,
+        official_url=submission.official_url,
         status="pending",
     )
     db.add(new_sub)

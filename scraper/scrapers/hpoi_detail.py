@@ -105,8 +105,14 @@ def parse_detail_page(html: str) -> dict[str, Any]:
             result["image_url"] = src.split("?")[0]
             break
 
-    # Convert text fields to Traditional Chinese
-    for key in ("character", "franchise", "japanese_name"):
+    # Convert display text fields to Traditional Chinese for the zh-TW UI.
+    # IMPORTANT: japanese_name is deliberately EXCLUDED — it becomes
+    # figures.original_name, which is the query we send to Japanese resale sites
+    # (Yahoo Auctions, Mercari). Those sites index Japanese shinjitai (装/実/転),
+    # so S2T-converting it to Traditional (裝/實/轉) makes ~44% of names
+    # unsearchable there and was silently tanking Yahoo/Mercari match rates.
+    # Keep the raw Japanese exactly as Hpoi provides it.
+    for key in ("character", "franchise"):
         if key in result and result[key]:
             result[key] = _s2t.convert(result[key])
 

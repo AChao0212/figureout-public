@@ -7,12 +7,19 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Area,
   ComposedChart,
+  Area,
   Line,
   Scatter,
+  ReferenceLine,
 } from "recharts";
 import { format, parseISO, subDays, subMonths, subYears } from "date-fns";
+import { useExchangeRates } from "./ExchangeRateContext";
+import {
+  convertCurrency,
+  formatCurrency,
+  formatCurrencyTick,
+} from "@/lib/currency";
 
 interface PriceDataPoint {
   date: string;
@@ -20,12 +27,13 @@ interface PriceDataPoint {
   median_price: number;
   min_price: number;
   max_price: number;
+  sample_count?: number;
 }
 
 interface Listing {
   id: number;
   price: number;
-  price_usd?: number;
+  price_canonical?: number;
   currency: string;
   condition: string;
   sold_at?: string;
@@ -34,17 +42,16 @@ interface Listing {
 }
 
 interface PriceChartProps {
+  /** Daily aggregates from the backend (already in display currency). Drives the trend line. */
   data: PriceDataPoint[];
   dataByCondition?: Record<string, PriceDataPoint[]>;
+  /** Individual transactions. Rendered as small scatter dots showing the day's spread. */
   listings?: Listing[];
   currency?: string;
 }
 
 type TimeRange = "7d" | "1m" | "3m" | "6m" | "1y" | "all";
 type ConditionTab = "all" | "sealed" | "opened" | "used" | "damaged";
-
-const EXCHANGE_RATES: Record<string, number> = { USD: 1, TWD: 32.2, JPY: 149.5, CNY: 7.25 };
-const CURRENCY_SYMBOLS: Record<string, string> = { TWD: "NT$", JPY: "\u00a5", USD: "$", CNY: "\u00a5" };
 
 const TIME_RANGES: { key: TimeRange; label: string }[] = [
   { key: "7d", label: "7天" },
@@ -63,6 +70,15 @@ const CONDITION_TABS: { key: ConditionTab; label: string }[] = [
   { key: "damaged", label: "瑕疵" },
 ];
 
+const CONDITION_LABELS: Record<string, string> = {
+  sealed: "全新", opened: "拆檢", used: "拆擺", damaged: "瑕疵",
+};
+
+const SOURCE_LABELS: Record<string, string> = {
+  yahoo_auction: "Yahoo", mercari: "Mercari", mercari_jp: "Mercari",
+  user_report: "社群回報", manual: "手動",
+};
+
 function getStartDate(range: TimeRange): Date | null {
   const now = new Date();
   switch (range) {
@@ -75,49 +91,150 @@ function getStartDate(range: TimeRange): Date | null {
   }
 }
 
-function formatCurrencyValue(val: number, currency: string): string {
-  const sym = CURRENCY_SYMBOLS[currency] || "$";
-  if (currency === "JPY") return `${sym}${Math.round(val).toLocaleString()}`;
-  return `${sym}${val.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+interface DailyAggregate {
+  avg: number;
+  median: number;
+  min: number;
+  max: number;
+  count: number;
 }
 
-function formatTickValue(val: number, currency: string): string {
-  const sym = CURRENCY_SYMBOLS[currency] || "$";
-  if (val >= 10000) {
-    const k = val / 1000;
-    return `${sym}${k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)}k`;
-  }
-  return `${sym}${Math.round(val).toLocaleString()}`;
+interface DailyListing {
+  price: number;
+  condition?: string;
+  source?: string;
+  title?: string;
 }
 
+/**
+ * Each chart row contributes to one or more series:
+ *  - `trend`        → trend line + gradient area (one row per day, plus a flat tail to today)
+ *  - `listing_price` → scatter dot (one row per individual transaction)
+ * A row may have both fields when a single listing is the day's only transaction.
+ */
+interface ChartRow {
+  dateLabel: string;
+  sortKey: string;
+  /** Daily median, drives the trend line. Only set on a day's primary row + the today-tail row. */
+  trend?: number;
+  /** Individual transaction price, drives the scatter. Only set on per-listing rows. */
+  listing_price?: number;
+  /** Indicates the trailing "today" tail row, so we can hide its dot/tooltip. */
+  isTail?: boolean;
+  /** Per-row context for tooltips. */
+  condition?: string;
+  source?: string;
+  title?: string;
+  dailyAgg?: DailyAggregate;
+  /** All listings on this day — populated on every row so any hover shows full context. */
+  dayListings?: DailyListing[];
+}
+
+/** Tooltip — same content regardless of whether the user hovers a trend dot or a scatter dot.
+ *  Single-listing days show the listing's full details. Multi-listing days show the day's
+ *  aggregate stats plus a compact list of every transaction. */
 function CustomTooltip({
-  active, payload, label, currency,
+  active, payload, currency,
 }: {
   active?: boolean;
-  payload?: Array<{ dataKey: string; value: number }>;
-  label?: string;
+  payload?: Array<{ payload: ChartRow }>;
   currency: string;
 }) {
   if (!active || !payload || payload.length === 0) return null;
-  const colorMap: Record<string, { label: string; color: string }> = {
-    avg_price: { label: "平均", color: "#C4A265" },
-    median_price: { label: "中位數", color: "#c9d1d9" },
-    max_price: { label: "最高", color: "#3fb950" },
-    min_price: { label: "最低", color: "#f85149" },
-    listing_price: { label: "成交", color: "#e6edf3" },
-  };
+  const row = payload[0].payload;
+  if (row.isTail) return null; // never show tooltip on the carry-forward tail
+
+  const agg = row.dailyAgg;
+  const dayListings = row.dayListings ?? [];
+  const isMultiDay = (agg?.count ?? dayListings.length) > 1;
+  // For single-listing days, prefer the listing's own metadata if the row carries it
+  // (i.e. user hovered the scatter dot); otherwise pull from dayListings[0].
+  const single = !isMultiDay
+    ? {
+        price: row.listing_price ?? dayListings[0]?.price ?? row.trend,
+        condition: row.condition ?? dayListings[0]?.condition,
+        source: row.source ?? dayListings[0]?.source,
+        title: row.title ?? dayListings[0]?.title,
+      }
+    : null;
+
   return (
-    <div style={{ backgroundColor: "#161b22", border: "1px solid #30363d", borderRadius: "8px", padding: "8px 12px", fontSize: "12px" }}>
-      <p style={{ color: "#c9d1d9", margin: "0 0 4px 0" }}>{label}</p>
-      {payload.map((entry) => {
-        const mapping = colorMap[entry.dataKey];
-        if (!mapping) return null;
-        return (
-          <p key={entry.dataKey} style={{ color: mapping.color, margin: "2px 0", fontWeight: 500 }}>
-            {mapping.label}: {typeof entry.value === "number" ? formatCurrencyValue(entry.value, currency) : entry.value}
+    <div style={{
+      backgroundColor: "#161b22", border: "1px solid #30363d",
+      borderRadius: "8px", padding: "8px 12px", fontSize: "12px",
+      maxWidth: 280,
+    }}>
+      <p style={{ color: "#8b949e", margin: "0 0 4px 0", fontSize: "11px" }}>
+        {row.dateLabel}
+      </p>
+
+      {single && (
+        <>
+          {single.price != null && (
+            <p style={{ color: "#C4A265", margin: "2px 0", fontWeight: 600, fontSize: "13px" }}>
+              成交：{formatCurrency(single.price, currency)}
+            </p>
+          )}
+          {single.condition && (
+            <p style={{ color: "#c9d1d9", margin: "2px 0", fontSize: "11px" }}>
+              狀態：{single.condition}
+            </p>
+          )}
+          {single.source && (
+            <p style={{ color: "#c9d1d9", margin: "2px 0", fontSize: "11px" }}>
+              來源：{single.source}
+            </p>
+          )}
+          {single.title && (
+            <p style={{
+              color: "#8b949e", margin: "4px 0 0 0", fontSize: "10px",
+              maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}>
+              {single.title}
+            </p>
+          )}
+        </>
+      )}
+
+      {isMultiDay && agg && (
+        <>
+          <p style={{ color: "#6e7681", margin: "0 0 3px 0", fontSize: "10px" }}>
+            當日 {agg.count} 筆
           </p>
-        );
-      })}
+          <p style={{ color: "#c9d1d9", margin: "1px 0", fontSize: "11px" }}>
+            中位數 {formatCurrency(agg.median, currency)}
+          </p>
+          <p style={{ color: "#C4A265", margin: "1px 0", fontSize: "11px" }}>
+            平均 {formatCurrency(agg.avg, currency)}
+          </p>
+          <p style={{ color: "#3fb950", margin: "1px 0", fontSize: "11px" }}>
+            最高 {formatCurrency(agg.max, currency)}
+          </p>
+          <p style={{ color: "#f85149", margin: "1px 0", fontSize: "11px" }}>
+            最低 {formatCurrency(agg.min, currency)}
+          </p>
+          {dayListings.length > 0 && (
+            <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid #21262d" }}>
+              <p style={{ color: "#6e7681", margin: "0 0 3px 0", fontSize: "10px" }}>
+                成交紀錄
+              </p>
+              {dayListings.slice(0, 6).map((l, i) => (
+                <p key={i} style={{ color: "#c9d1d9", margin: "1px 0", fontSize: "10px" }}>
+                  {formatCurrency(l.price, currency)}
+                  {l.condition ? ` · ${l.condition}` : ""}
+                  {l.source ? ` · ${l.source}` : ""}
+                </p>
+              ))}
+              {dayListings.length > 6 && (
+                <p style={{ color: "#484f58", margin: "1px 0", fontSize: "10px" }}>
+                  …等 {dayListings.length} 筆
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -125,8 +242,8 @@ function CustomTooltip({
 export default function PriceChart({ data, dataByCondition, listings, currency = "TWD" }: PriceChartProps) {
   const [range, setRange] = useState<TimeRange>("all");
   const [condTab, setCondTab] = useState<ConditionTab>("all");
+  const liveRates = useExchangeRates() as unknown as Record<string, number>;
 
-  // Determine which conditions have data
   const availableConditions = useMemo(() => {
     if (!dataByCondition) return ["all"];
     return CONDITION_TABS.map(t => t.key).filter(k => {
@@ -135,19 +252,123 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
     });
   }, [data, dataByCondition]);
 
-  // Get data for current condition tab
   const condData = useMemo(() => {
     if (condTab === "all") return data;
-    if (!dataByCondition || !dataByCondition[condTab]) return [];
-    return dataByCondition[condTab];
+    return dataByCondition?.[condTab] ?? [];
   }, [condTab, data, dataByCondition]);
 
-  const filtered = useMemo(() => {
-    if (!condData || condData.length === 0) return [];
-    const start = getStartDate(range);
-    if (!start) return condData;
-    return condData.filter((d) => parseISO(d.date) >= start);
-  }, [condData, range]);
+  // Filter aggregates and listings to the active time range in one place.
+  const start = getStartDate(range);
+
+  // Daily aggregates that fall inside the time range, sorted ascending.
+  const filteredAggregates = useMemo(() => {
+    return (condData ?? [])
+      .filter(d => !start || parseISO(d.date) >= start)
+      .map(d => ({
+        dateLabel: format(parseISO(d.date), "yyyy/MM/dd"),
+        sortKey: d.date,
+        agg: {
+          avg: d.avg_price,
+          median: d.median_price,
+          min: d.min_price,
+          max: d.max_price,
+          count: d.sample_count ?? 1,
+        } as DailyAggregate,
+      }))
+      .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  }, [condData, start]);
+
+  // Group listings by date so per-day scatter rows can pull the right day's aggregate
+  // for tooltips without re-fetching it.
+  const listingsByDate = useMemo(() => {
+    const map = new Map<string, DailyListing[]>();
+    if (!listings) return map;
+    for (const l of listings) {
+      if (condTab !== "all" && l.condition !== condTab) continue;
+      const d = l.sold_at ? new Date(l.sold_at) : null;
+      if (!d) continue;
+      if (start && d < start) continue;
+      const dateLabel = format(d, "yyyy/MM/dd");
+      const arr = map.get(dateLabel) ?? [];
+      arr.push({
+        price: convertCurrency(l.price, l.currency, currency, liveRates),
+        condition: CONDITION_LABELS[l.condition] || l.condition,
+        source: SOURCE_LABELS[l.source] || l.source,
+        title: l.title,
+      });
+      map.set(dateLabel, arr);
+    }
+    return map;
+  }, [listings, condTab, start, currency, liveRates]);
+
+  // Unified data array with two series interleaved:
+  //  - One row per day with `trend` set (drives the line + area).
+  //  - One row per listing with `listing_price` set (drives the scatter).
+  //  - A trailing "today" row carries the last median forward as a flat tail (no dot).
+  const chartRows = useMemo<ChartRow[]>(() => {
+    const rows: ChartRow[] = [];
+    const aggByDate = new Map(filteredAggregates.map(a => [a.dateLabel, a.agg]));
+
+    for (const a of filteredAggregates) {
+      rows.push({
+        dateLabel: a.dateLabel,
+        sortKey: a.sortKey,
+        trend: a.agg.median,
+        dailyAgg: a.agg,
+        dayListings: listingsByDate.get(a.dateLabel) ?? [],
+      });
+    }
+
+    for (const [dateLabel, dayListings] of listingsByDate.entries()) {
+      const agg = aggByDate.get(dateLabel);
+      const sortKey = filteredAggregates.find(a => a.dateLabel === dateLabel)?.sortKey ?? dateLabel;
+      for (const l of dayListings) {
+        rows.push({
+          dateLabel,
+          sortKey: sortKey + "_dot",
+          listing_price: l.price,
+          condition: l.condition,
+          source: l.source,
+          title: l.title,
+          dailyAgg: agg,
+          dayListings,
+        });
+      }
+    }
+
+    rows.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+
+    // Carry the last median forward to today so the trend line reaches the right edge.
+    // The tail row holds no scatter and is invisible (no dot, no tooltip), so it doesn't
+    // imply that a transaction happened today.
+    if (filteredAggregates.length > 0) {
+      const lastAgg = filteredAggregates[filteredAggregates.length - 1];
+      const todayLabel = format(new Date(), "yyyy/MM/dd");
+      if (lastAgg.dateLabel < todayLabel) {
+        rows.push({
+          dateLabel: todayLabel,
+          sortKey: new Date().toISOString(),
+          trend: lastAgg.agg.median,
+          isTail: true,
+        });
+      }
+    }
+
+    return rows;
+  }, [filteredAggregates, listingsByDate]);
+
+  // X-axis ticks: each unique date once, in chronological order.
+  const uniqueDates = useMemo(() => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const r of chartRows) {
+      if (!seen.has(r.dateLabel)) {
+        seen.add(r.dateLabel);
+        result.push(r.dateLabel);
+      }
+    }
+    return result;
+  }, [chartRows]);
 
   if (!data || data.length === 0) {
     return (
@@ -157,107 +378,25 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
     );
   }
 
-  const chartData = range === "all" ? condData : filtered;
-  // Note: mergedData is used below for the actual chart rendering
-  const rate = EXCHANGE_RATES[currency] || 1;
-
-  const formatted = (chartData || []).map((d) => ({
-    dateLabel: format(parseISO(d.date), "yyyy/MM/dd"),
-    avg_price: d.avg_price * rate,
-    median_price: d.median_price * rate,
-    min_price: d.min_price * rate,
-    max_price: d.max_price * rate,
-  }));
-
-  const isSinglePoint = formatted.length === 1;
-
-  // Individual listing dots (transactions)
-  const listingDots = useMemo(() => {
-    if (!listings || listings.length === 0) return [];
-    const condLabels: Record<string, string> = { sealed: "全新", opened: "拆檢", used: "拆擺", damaged: "瑕疵" };
-    return listings
-      .filter(l => {
-        if (!l.sold_at && !l.price_usd) return false;
-        // Filter by condition tab
-        if (condTab !== "all" && l.condition !== condTab) return false;
-        // Filter by time range
-        const rangeStart = getStartDate(range);
-        if (rangeStart) {
-          const d = l.sold_at ? new Date(l.sold_at) : new Date();
-          if (d < rangeStart) return false;
-        }
-        return true;
-      })
-      .map(l => {
-        const d = l.sold_at ? new Date(l.sold_at) : new Date();
-        const dateLabel = format(d, "yyyy/MM/dd");
-        const priceUsd = l.price_usd || (l.price / (EXCHANGE_RATES[l.currency] || 1));
-        return {
-          dateLabel,
-          listing_price: priceUsd * rate,
-          condition: condLabels[l.condition] || l.condition,
-          source: l.source,
-          title: l.title || "",
-        };
-      });
-  }, [listings, condTab, rate, range]);
-
-  // Merge listing dates into chart data for a unified timeline
-  const mergedData = useMemo(() => {
-    if (listingDots.length === 0) return formatted;
-    const dateMap = new Map<string, any>();
-    for (const d of formatted) {
-      dateMap.set(d.dateLabel, { ...d });
-    }
-    for (const dot of listingDots) {
-      if (!dateMap.has(dot.dateLabel)) {
-        dateMap.set(dot.dateLabel, { dateLabel: dot.dateLabel });
-      }
-      const existing = dateMap.get(dot.dateLabel)!;
-      // Store listing prices as an array for this date
-      if (!existing.listing_prices) existing.listing_prices = [];
-      existing.listing_prices.push(dot.listing_price);
-      // Use the first listing price as the scatter point
-      existing.listing_price = dot.listing_price;
-    }
-    const sorted = Array.from(dateMap.values()).sort((a, b) => a.dateLabel.localeCompare(b.dateLabel));
-    
-    // Connect all dots: fill avg_price/median_price from listing_price where missing
-    // This ensures the Line component draws through listing dots too
-    for (const entry of sorted) {
-      if (entry.listing_price && !entry.avg_price) {
-        entry.avg_price = entry.listing_price;
-        entry.median_price = entry.listing_price;
-        entry.min_price = entry.listing_price;
-        entry.max_price = entry.listing_price;
-      }
-    }
-    
-    // Carry forward: if last data point is before today, add a phantom point at today
-    if (sorted.length > 0) {
-      const todayLabel = format(new Date(), "yyyy/MM/dd");
-      const last = sorted[sorted.length - 1];
-      if (last.dateLabel < todayLabel) {
-        // Copy the last known prices as a carried-forward point
-        sorted.push({
-          dateLabel: todayLabel,
-          avg_price: last.avg_price || last.listing_price,
-          median_price: last.median_price || last.listing_price,
-          min_price: last.min_price,
-          max_price: last.max_price,
-          carried_forward: true, // flag for dashed line styling
-        });
-      }
-    }
-    
-    return sorted;
-  }, [formatted, listingDots]);
-
-  const allValues = mergedData.flatMap((d) => [d.min_price, d.max_price, d.avg_price, d.median_price, d.listing_price].filter(v => v != null));
-  const minVal = Math.min(...allValues);
-  const maxVal = Math.max(...allValues);
+  // Y-axis domain spans every value the user can see — trend line, scatter dots,
+  // and the tooltip's max/min — so nothing falls outside the visible area.
+  const allValues = chartRows.flatMap(r => {
+    const vs: number[] = [];
+    if (r.trend != null) vs.push(r.trend);
+    if (r.listing_price != null) vs.push(r.listing_price);
+    if (r.dailyAgg) vs.push(r.dailyAgg.min, r.dailyAgg.max);
+    return vs;
+  });
+  const minVal = allValues.length ? Math.min(...allValues) : 0;
+  const maxVal = allValues.length ? Math.max(...allValues) : 0;
   const padding = (maxVal - minVal) * 0.1 || maxVal * 0.1 || 10;
   const yDomain = [Math.max(0, Math.floor(minVal - padding)), Math.ceil(maxVal + padding)];
+
+  // Find the dateLabel of the last actual data point — used to draw a subtle vertical
+  // marker separating real history from the "today" tail.
+  const lastActualLabel = filteredAggregates.length > 0
+    ? filteredAggregates[filteredAggregates.length - 1].dateLabel
+    : null;
 
   return (
     <div>
@@ -297,36 +436,85 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
         ))}
       </div>
 
-      {mergedData.length === 0 ? (
+      {chartRows.length === 0 ? (
         <div className="flex h-48 items-center justify-center text-sm text-[#6e7681]">
           此狀態尚無價格資料
         </div>
       ) : (
         <div className="h-56 w-full sm:h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={mergedData} margin={{ top: 5, right: 10, left: 15, bottom: 0 }}>
+            <ComposedChart data={chartRows} margin={{ top: 5, right: 10, left: 15, bottom: 0 }}>
+              <defs>
+                <linearGradient id="priceTrendFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#C4A265" stopOpacity={0.25} />
+                  <stop offset="100%" stopColor="#C4A265" stopOpacity={0} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#21262d" />
-              <XAxis dataKey="dateLabel" stroke="#30363d" tick={{ fill: "#8b949e", fontSize: 11 }} interval={isSinglePoint ? 0 : "preserveStartEnd"} />
-              <YAxis stroke="#30363d" tick={{ fill: "#8b949e", fontSize: 10 }} width={60} domain={yDomain} tickFormatter={(v: number) => formatTickValue(v, currency)} />
-              <Tooltip content={<CustomTooltip currency={currency} />} />
-              {!isSinglePoint && (
-                <>
-                  <Area type="monotone" dataKey="max_price" stroke="none" fill="rgba(196, 162, 101, 0.1)" fillOpacity={0.8} />
-                  <Area type="monotone" dataKey="min_price" stroke="none" fill="#0d1117" fillOpacity={1} />
-                  <Line type="monotone" dataKey="avg_price" stroke="#C4A265" strokeWidth={2} dot={false} activeDot={{ r: 3, fill: "#C4A265" }} />
-                  <Line type="monotone" dataKey="median_price" stroke="#8b949e" strokeWidth={1.5} strokeDasharray="4 4" dot={false} activeDot={{ r: 3, fill: "#8b949e" }} />
-                </>
+              <XAxis
+                dataKey="dateLabel"
+                stroke="#30363d"
+                tick={{ fill: "#8b949e", fontSize: 11 }}
+                type="category"
+                allowDuplicatedCategory={false}
+                ticks={uniqueDates}
+                interval="preserveStartEnd"
+                minTickGap={30}
+              />
+              <YAxis
+                stroke="#30363d"
+                tick={{ fill: "#8b949e", fontSize: 10 }}
+                width={60}
+                domain={yDomain}
+                tickFormatter={(v: number) => formatCurrencyTick(v, currency)}
+              />
+              <Tooltip content={<CustomTooltip currency={currency} />} cursor={{ stroke: "#30363d", strokeDasharray: "3 3" }} />
+
+              {/* Soft gradient fill under the trend line. Connects across days so the area
+                  spans the full range, including the carry-forward tail. */}
+              <Area
+                type="monotone"
+                dataKey="trend"
+                stroke="none"
+                fill="url(#priceTrendFill)"
+                connectNulls
+                isAnimationActive={false}
+              />
+
+              {/* Trend line through daily medians. Connects across listing-only rows
+                  (which have null `trend`) and reaches today via the tail row. */}
+              <Line
+                type="monotone"
+                dataKey="trend"
+                stroke="#C4A265"
+                strokeWidth={2}
+                dot={(props) => {
+                  const { payload, cx, cy } = props as unknown as { payload: ChartRow; cx: number; cy: number };
+                  if (payload.isTail || payload.trend == null) {
+                    // Recharts requires an SVG element; render an invisible marker.
+                    return <circle key={`d-${payload.sortKey}`} cx={cx} cy={cy} r={0} fill="transparent" />;
+                  }
+                  return <circle key={`d-${payload.sortKey}`} cx={cx} cy={cy} r={3.5} fill="#C4A265" stroke="#0d1117" strokeWidth={1.5} />;
+                }}
+                activeDot={{ r: 5, fill: "#C4A265", stroke: "#0d1117", strokeWidth: 2 }}
+                connectNulls
+                isAnimationActive={false}
+              />
+
+              {/* Individual transaction dots — small and translucent so they
+                  enrich the picture without competing with the trend line. */}
+              <Scatter
+                dataKey="listing_price"
+                fill="#C4A265"
+                fillOpacity={0.45}
+                shape="circle"
+                isAnimationActive={false}
+              />
+
+              {/* Subtle marker at the boundary between actual data and the today-tail. */}
+              {lastActualLabel && lastActualLabel !== uniqueDates[uniqueDates.length - 1] && (
+                <ReferenceLine x={lastActualLabel} stroke="#30363d" strokeDasharray="3 3" />
               )}
-              {isSinglePoint && (
-                <>
-                  <Line type="monotone" dataKey="avg_price" stroke="#C4A265" strokeWidth={2} dot={{ r: 5, fill: "#C4A265", stroke: "#C4A265" }} />
-                  <Line type="monotone" dataKey="median_price" stroke="#8b949e" strokeWidth={1.5} dot={{ r: 4, fill: "#8b949e", stroke: "#8b949e" }} />
-                  <Line type="monotone" dataKey="max_price" stroke="#3fb950" strokeWidth={1} dot={{ r: 3, fill: "#3fb950", stroke: "#3fb950" }} />
-                  <Line type="monotone" dataKey="min_price" stroke="#f85149" strokeWidth={1} dot={{ r: 3, fill: "#f85149", stroke: "#f85149" }} />
-                </>
-              )}
-              {/* Individual transaction dots */}
-              <Scatter dataKey="listing_price" fill="#C4A265" fillOpacity={0.8} shape="circle" r={3} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -334,11 +522,15 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
 
       {/* Legend */}
       <div className="mt-2 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[10px]">
-        <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-[#C4A265]" /><span className="text-[#8b949e]">平均</span></span>
-        <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-3 border-t border-dashed border-[#8b949e]" /><span className="text-[#8b949e]">中位數</span></span>
-        <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-[#3fb950]/30" /><span className="text-[#8b949e]">最高</span></span>
-        <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-[#f85149]/30" /><span className="text-[#8b949e]">最低</span></span>
-        <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-[#C4A265]" /><span className="text-[#8b949e]">成交</span></span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-0.5 w-4 bg-[#C4A265]" />
+          <span className="text-[#8b949e]">趨勢（每日中位數）</span>
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#C4A265]/60" />
+          <span className="text-[#8b949e]">個別成交</span>
+        </span>
+        <span className="text-[#484f58]">滑鼠移上去看更多</span>
       </div>
     </div>
   );

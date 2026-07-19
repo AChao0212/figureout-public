@@ -17,10 +17,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         now = time()
 
-        # Skip rate limiting for auth, static files, and health checks
-        # Auth endpoints are protected by their own rate limits (login attempts)
-        if (path.startswith("/_next") or path == "/api/health" or
-            "/user/me" in path or "/user/login" in path or "/user/register" in path):
+        # Skip rate limiting for auth endpoints and static files.
+        # Auth endpoints are protected by their own rate limits.
+        # Use exact-path checks (not substring) to avoid future URL collisions.
+        AUTH_PATHS = {"/user/me", "/user/login", "/user/register"}
+        if path.startswith("/_next") or path == "/api/health" or path in AUTH_PATHS:
             return await call_next(request)
 
         # Per-IP: max 600 requests per minute globally (generous for normal browsing)

@@ -15,6 +15,8 @@ from schemas import (
     FigureRelated,
     FigureDetail,
     FigureOut,
+    FigureCardOut,
+    SearchResultCard,
     FigureSubmissionIn,
     FigureSubmissionOut,
     ListingOut,
@@ -148,7 +150,7 @@ async def recalculate_figure_snapshots(figure_id: int, db):
         f.median_price = overall["median"]
 
 
-@router.get("", response_model=SearchResult)
+@router.get("")  # response shape depends on ?fields= (SearchResult | SearchResultCard)
 async def search_figures(
     q: str = Query("", description="Search query"),
     scale: str = Query("", description="Filter by scale"),
@@ -164,12 +166,27 @@ async def search_figures(
     skip: int = Query(0, ge=0),
     limit: int = Query(24, ge=1, le=100),
     currency: str = Query("TWD", description="Display currency for returned prices"),
+    fields: str = Query("full", pattern="^(full|card)$",
+                        description="card = only the eight fields a grid tile renders"),
     db: AsyncSession = Depends(get_db),
-) -> SearchResult:
+):
     # Display currency: snapshots are cached in TWD (the platform's canonical unit);
     # convert at query time using live rates so cards everywhere show the same
     # number for the same figure. Always fetch live rates so retail (often JPY)
     # gets accurate conversion even when the display currency is TWD.
+    # This is a search endpoint, not a catalogue dump. Unfiltered it will happily
+    # enumerate every figure 100 at a time — 337 requests for the whole table,
+    # inside the global 600/min budget — which makes it the cheapest bulk
+    # extraction path in the product and undercuts the price data it took
+    # scraping plus LLM matching to build. Nothing in the app asks for an
+    # unfiltered list, so require at least one predicate.
+    if not any([q, scale, manufacturer, series, franchise, sculptor,
+                character, painter, illustrator, figure_type]):
+        raise HTTPException(
+            status_code=400,
+            detail="至少需要一個搜尋條件",
+        )
+
     display_currency = _normalize_currency(currency, default="TWD")
     rates = await _get_live_rates()
     # Subquery to get the latest snapshot date per figure
@@ -494,6 +511,12 @@ async def search_figures(
         figures.sort(key=lambda f: (-_sc(f), -(getattr(f, "current_median_price", None) or 0)))
         figures = figures[skip:skip + limit]
 
+    if fields == "card":
+        # Same query, lighter wire format — grids never read the other 22 fields.
+        return SearchResultCard(
+            figures=[FigureCardOut.model_validate(f) for f in figures],
+            total=total,
+        )
     return SearchResult(figures=figures, total=total)
 
 

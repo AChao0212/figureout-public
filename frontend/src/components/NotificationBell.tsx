@@ -6,6 +6,12 @@ import { useAuth } from "./AuthContext";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+/**
+ * Unread indicator for the top bar. Typographic rather than iconographic to
+ * match the rest of the chrome: the word carries the label, and unread state
+ * is carried by a dot — never by recolouring the word, so the bar keeps one
+ * text colour per line.
+ */
 export default function NotificationBell() {
   const { user, token } = useAuth();
   const [count, setCount] = useState(0);
@@ -37,28 +43,15 @@ export default function NotificationBell() {
   return (
     <Link
       href="/watchlist"
-      className="relative flex h-8 w-8 items-center justify-center rounded-md text-gray-400 transition-colors hover:text-[#C4A265]"
-      aria-label="通知"
+      className="relative px-3 py-2 font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]"
+      aria-label={count > 0 ? `通知，${count} 則未讀` : "通知"}
     >
-      {/* Bell SVG */}
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="h-5 w-5"
-      >
-        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-      </svg>
-
+      通知
       {count > 0 && (
-        <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white">
-          {count > 99 ? "99+" : count}
-        </span>
+        <span
+          className="absolute right-1.5 top-1.5 h-1 w-1 rounded-full bg-[var(--ink)]"
+          aria-hidden="true"
+        />
       )}
     </Link>
   );

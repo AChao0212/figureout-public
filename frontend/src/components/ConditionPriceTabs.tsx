@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { formatCurrency } from "@/lib/currency";
+import CountUp from "./CountUp";
 
 interface ConditionPrice {
   condition: string;
@@ -13,57 +14,117 @@ interface ConditionPrice {
   sample_count: number;
 }
 
+interface Props {
+  prices: ConditionPrice[];
+  currency: string;
+  /** Overall figures across every condition — rendered as the leading
+   *  「全部」 tab so the old separate 價格摘要 block is no longer needed. */
+  overall?: {
+    avg_price: number | null;
+    median_price: number | null;
+    min_price: number | null;
+    max_price: number | null;
+    sample_count?: number;
+  } | null;
+  /** Change against retail, shown under the headline number. */
+  changePct?: number | null;
+  retailLine?: string | null;
+}
+
 // Prices are already in `currency` (backend converts via /figures/{id}?currency=XXX).
 // `formatCurrency` only adds the symbol, no rate math.
 const fp = formatCurrency;
+const show = (v: number | null | undefined, c: string) => (v != null ? fp(v, c) : "--");
 
-export default function ConditionPriceTabs({ prices, currency }: { prices: ConditionPrice[]; currency: string }) {
-  const [active, setActive] = useState(prices[0]?.condition || "sealed");
-  const cp = prices.find(p => p.condition === active) || prices[0];
+/**
+ * The one number a collector came for is the median, so it is the display
+ * type; average / low / high sit under it as supporting columns, and the
+ * condition tabs re-point all four. Label sits above value throughout, so no
+ * line ever carries two text colours.
+ */
+export default function ConditionPriceTabs({
+  prices,
+  currency,
+  overall,
+  changePct,
+  retailLine,
+}: Props) {
+  const tabs = [
+    ...(overall
+      ? [
+          {
+            condition: "__all__",
+            condition_label: "全部",
+            avg_price: overall.avg_price,
+            median_price: overall.median_price,
+            min_price: overall.min_price,
+            max_price: overall.max_price,
+            sample_count: overall.sample_count,
+          },
+        ]
+      : []),
+    ...prices,
+  ];
 
+  const [active, setActive] = useState(tabs[0]?.condition ?? "");
+  const cp = tabs.find((t) => t.condition === active) || tabs[0];
   if (!cp) return null;
 
-  return (
-    <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-[#6e7681]">各狀態價格</h2>
-        <span className="rounded-full bg-[#0d1117] px-2 py-0.5 text-[10px] text-[#6e7681]">{cp.sample_count} 筆</span>
-      </div>
+  const isUp = changePct != null && changePct >= 0;
 
-      {/* Condition tabs */}
-      <div className="mb-3 flex gap-1.5 overflow-x-auto scrollbar-none">
-        {prices.map((p) => (
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-[var(--rule-faint)] pb-4">
+        {tabs.map((t) => (
           <button
-            key={p.condition}
-            onClick={() => setActive(p.condition)}
-            className={`shrink-0 rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
-              active === p.condition
-                ? "border-[#C4A265] bg-[#C4A265]/20 text-[#C4A265]"
-                : "border-[#30363d] text-[#6e7681] hover:border-[#484f58] hover:text-[#8b949e]"
-            }`}
+            key={t.condition}
+            type="button"
+            onClick={() => setActive(t.condition)}
+            aria-pressed={active === t.condition}
+            className="seg"
           >
-            {p.condition_label}
+            {t.condition_label}
           </button>
         ))}
       </div>
 
-      {/* Price grid — matches 價格摘要 layout */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="pt-[clamp(18px,3vh,30px)]">
+        <span className="lbl">
+          中位成交價{cp.sample_count != null ? ` · ${cp.sample_count} 筆` : ""}
+        </span>
+        <CountUp
+          value={cp.median_price}
+          format={(v) => fp(v, currency)}
+          className="num block text-[clamp(40px,6.4vw,72px)] font-light leading-[0.92] tracking-[-0.035em] text-[var(--ink)]"
+        />
+
+        {/* Direction respects the reader's 紅漲/綠漲 convention via --up/--down;
+            this line used to hardcode green-for-up, contradicting the site default. */}
+        {changePct != null && (
+          <div className={`num mt-3.5 text-[12.5px] tracking-[0.04em] ${isUp ? "up" : "down"}`}>
+            {isUp ? "+" : ""}
+            {changePct.toFixed(1)}% 對定價
+          </div>
+        )}
+        {retailLine && (
+          <div className="mt-1.5 font-mono text-[11px] tracking-[0.06em] text-[var(--muted)]">
+            {retailLine}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-[clamp(20px,3.2vh,32px)] grid grid-cols-3 gap-x-6 border-t border-[var(--rule-faint)] pt-5">
         <div>
-          <p className="text-xs text-[#6e7681]">平均</p>
-          <p className="text-base font-bold text-[#C4A265] sm:text-xl">{fp(cp.avg_price, currency)}</p>
+          <span className="lbl">平均</span>
+          <CountUp value={cp.avg_price} format={(v) => fp(v, currency)} className="num block text-[15px] text-[var(--ink)]" />
         </div>
         <div>
-          <p className="text-xs text-[#6e7681]">中位數</p>
-          <p className="text-base font-bold text-[#c9d1d9] sm:text-xl">{fp(cp.median_price, currency)}</p>
+          <span className="lbl">最低</span>
+          <CountUp value={cp.min_price} format={(v) => fp(v, currency)} className="num block text-[15px] text-[var(--ink)]" />
         </div>
         <div>
-          <p className="text-xs text-[#6e7681]">最低</p>
-          <p className="text-base font-bold text-[#c9d1d9] sm:text-xl">{fp(cp.min_price, currency)}</p>
-        </div>
-        <div>
-          <p className="text-xs text-[#6e7681]">最高</p>
-          <p className="text-base font-bold text-[#c9d1d9] sm:text-xl">{fp(cp.max_price, currency)}</p>
+          <span className="lbl">最高</span>
+          <CountUp value={cp.max_price} format={(v) => fp(v, currency)} className="num block text-[15px] text-[var(--ink)]" />
         </div>
       </div>
     </div>

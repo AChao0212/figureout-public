@@ -4,66 +4,59 @@ import { useWatchlist } from "./WatchlistContext";
 
 interface WatchlistButtonProps {
   figureId: number;
+  /** Retained for call-site compatibility; the control is now typographic
+   *  and sizes itself from the type scale. */
   size?: "sm" | "md";
+  /** "overlay" sits on a photograph and needs its own ground behind it;
+   *  "inline" belongs in an action row and stands on the page. */
+  variant?: "overlay" | "inline";
 }
 
-export default function WatchlistButton({ figureId, size = "sm" }: WatchlistButtonProps) {
+export default function WatchlistButton({
+  figureId,
+  variant = "overlay",
+}: WatchlistButtonProps) {
   const { isInWatchlist, addToWatchlist, removeFromWatchlist } = useWatchlist();
   const active = isInWatchlist(figureId);
 
-  const px = size === "sm" ? 28 : 36;
-  const iconSize = size === "sm" ? 16 : 22;
-
   const toggle = (e: React.MouseEvent) => {
+    // Tiles wrap this in a <Link>, so the click must not navigate.
     e.preventDefault();
     e.stopPropagation();
-    if (active) {
-      removeFromWatchlist(figureId);
-    } else {
-      addToWatchlist(figureId);
-    }
+    if (active) removeFromWatchlist(figureId);
+    else addToWatchlist(figureId);
   };
+
+  const base =
+    "font-mono text-[10px] uppercase tracking-[0.2em] transition-colors cursor-pointer";
+
+  if (variant === "inline") {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        aria-pressed={active}
+        aria-label={active ? "從收藏移除" : "加入收藏"}
+        className={`${base} ${
+          active
+            ? "text-[var(--ink)]"
+            : "text-[var(--ink-2)] hover:text-[var(--ink)]"
+        }`}
+      >
+        {active ? "已收藏" : "加入收藏"}
+      </button>
+    );
+  }
 
   return (
     <button
       type="button"
       onClick={toggle}
+      aria-pressed={active}
       aria-label={active ? "從收藏移除" : "加入收藏"}
-      title={active ? "從收藏移除" : "加入收藏"}
-      style={{
-        width: px,
-        height: px,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        border: "none",
-        borderRadius: "50%",
-        background: active ? "rgba(196,162,101,0.15)" : "rgba(0,0,0,0.5)",
-        cursor: "pointer",
-        transition: "background 0.15s, transform 0.15s",
-        flexShrink: 0,
-        boxShadow: "0 1px 4px rgba(0,0,0,0.4)",
-      }}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.transform = "scale(1.15)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
-      }}
+      className={`${base} bg-[rgba(8,8,10,0.72)] px-2.5 py-1.5 text-[var(--ink)] hover:bg-[rgba(8,8,10,0.9)]`}
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width={iconSize}
-        height={iconSize}
-        viewBox="0 0 24 24"
-        fill={active ? "#C4A265" : "none"}
-        stroke={active ? "#C4A265" : "#c9d1d9"}
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-      </svg>
+      {active ? "已收藏" : "收藏"}
     </button>
   );
 }

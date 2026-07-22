@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useColorMode } from "@/components/ColorModeContext";
 import { formatCurrency } from "@/lib/currency";
@@ -20,46 +20,39 @@ interface TrendingFigure {
   franchise_name?: string;
 }
 
+/**
+ * Headlines are admin-configurable (GET /browse/config/trending-titles), so
+ * the rotation stays — it is a real feature and it carries the site's voice.
+ * What went is the per-character typewriter and blinking caret: the titles
+ * now cross-fade, which reads as considered rather than as a widget.
+ */
+function RotatingTitle({ texts }: { texts: string[] }) {
+  const [i, setI] = useState(0);
+  const [shown, setShown] = useState(true);
 
-
-function TypingTitle({ texts, className }: { texts: string[]; className?: string }) {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [displayed, setDisplayed] = useState("");
-  const [isDeleting, setIsDeleting] = useState(false);
-  const textsRef = useRef(texts);
-
-  // When texts change (mode switch), start deleting current text then switch
   useEffect(() => {
-    if (textsRef.current !== texts) {
-      textsRef.current = texts;
-      setIsDeleting(true);
-    }
+    setI(0);
   }, [texts]);
 
   useEffect(() => {
-    const currentTexts = textsRef.current;
-    const safeIndex = currentIndex % currentTexts.length;
-    const current = currentTexts[safeIndex];
-    let timeout: NodeJS.Timeout;
-
-    if (!isDeleting && displayed.length < current.length) {
-      timeout = setTimeout(() => setDisplayed(current.slice(0, displayed.length + 1)), 80);
-    } else if (!isDeleting && displayed.length === current.length) {
-      timeout = setTimeout(() => setIsDeleting(true), 2000);
-    } else if (isDeleting && displayed.length > 0) {
-      timeout = setTimeout(() => setDisplayed(current.slice(0, displayed.length - 1)), 40);
-    } else if (isDeleting && displayed.length === 0) {
-      setIsDeleting(false);
-      setCurrentIndex((i) => (i + 1) % currentTexts.length);
-    }
-
-    return () => clearTimeout(timeout);
-  }, [displayed, isDeleting, currentIndex]);
+    if (texts.length < 2) return;
+    const out = setTimeout(() => setShown(false), 4200);
+    const swap = setTimeout(() => {
+      setI((n) => (n + 1) % texts.length);
+      setShown(true);
+    }, 4700);
+    return () => {
+      clearTimeout(out);
+      clearTimeout(swap);
+    };
+  }, [i, texts]);
 
   return (
-    <span className={className}>
-      {displayed}
-      <span className="animate-pulse">|</span>
+    <span
+      className="inline-block transition-opacity duration-500 motion-reduce:transition-none"
+      style={{ opacity: shown ? 1 : 0 }}
+    >
+      {texts[i % texts.length]}
     </span>
   );
 }
@@ -91,10 +84,9 @@ export default function TrendingPage() {
 
   const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-  // Fetch custom titles from API
   useEffect(() => {
     fetch(`${apiUrl}/browse/config/trending-titles`)
-      .then((r) => r.ok ? r.json() : null)
+      .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data) {
           if (Array.isArray(data.best) && data.best.length > 0) setBestTitles(data.best);
@@ -104,9 +96,10 @@ export default function TrendingPage() {
       .catch(() => {});
   }, [apiUrl]);
 
-  const currency = typeof window !== "undefined"
-    ? new URLSearchParams(window.location.search).get("currency") || "TWD"
-    : "TWD";
+  const currency =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("currency") || "TWD"
+      : "TWD";
 
   useEffect(() => {
     setLoading(true);
@@ -126,133 +119,130 @@ export default function TrendingPage() {
   }, [period, mode, apiUrl, currency]);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-      {/* Typing animated title */}
-      <div className="mb-6 text-center">
-        <h1 className="text-2xl font-bold text-[#e6edf3] sm:text-3xl">
-          <TypingTitle
-            texts={mode === "best" ? bestTitles : worstTitles}
-            className="text-[#C4A265]"
-          />
+    <div className="col pb-10 pt-[clamp(24px,4.5vh,46px)]">
+      <div className="pb-[clamp(20px,3.5vh,34px)]">
+        <span className="lbl">排行榜</span>
+        <h1 className="display">
+          <RotatingTitle texts={mode === "best" ? bestTitles : worstTitles} />
         </h1>
-        <p className="mt-2 text-sm text-[#8b949e]">
-          {mode === "best" ? "近期漲幅最大的公仔排行" : "近期跌幅最大的公仔排行"}
-        </p>
       </div>
 
-      {/* Controls */}
-      <div className="mb-6 flex flex-wrap items-center justify-center gap-3">
-        {/* Period selector */}
-        <div className="flex gap-1 rounded-lg border border-[#30363d] bg-[#0d1117] p-1">
+      {/* controls: period on the left, direction on the right */}
+      <div className="rule-b flex flex-wrap items-center justify-between gap-x-8 gap-y-4 pb-4">
+        <div className="flex flex-wrap gap-x-6 gap-y-2">
           {PERIODS.map((p) => (
             <button
               key={p.key}
+              type="button"
               onClick={() => setPeriod(p.key)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                period === p.key
-                  ? "bg-[#C4A265]/20 text-[#C4A265]"
-                  : "text-[#8b949e] hover:text-[#c9d1d9]"
-              }`}
+              aria-pressed={period === p.key}
+              className="seg"
             >
               {p.label}
             </button>
           ))}
         </div>
-
-        {/* Mode toggle */}
-        <button
-          onClick={() => setMode(mode === "best" ? "worst" : "best")}
-          className="flex items-center gap-2 rounded-lg border border-[#30363d] bg-[#161b22] px-4 py-1.5 text-xs font-medium text-[#c9d1d9] transition-colors hover:border-[#484f58]"
-        >
-          {mode === "best" ? (
-            <>
-              <span style={{ color: upColor }}>▲</span>
-              <span>飆股模式</span>
-              <span className="text-[#6e7681]">→ 切換砸盤</span>
-            </>
-          ) : (
-            <>
-              <span style={{ color: downColor }}>▼</span>
-              <span>砸盤模式</span>
-              <span className="text-[#6e7681]">→ 切換飆股</span>
-            </>
-          )}
-        </button>
+        <div className="flex gap-x-6">
+          <button
+            type="button"
+            onClick={() => setMode("best")}
+            aria-pressed={mode === "best"}
+            className="seg"
+          >
+            漲幅
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("worst")}
+            aria-pressed={mode === "worst"}
+            className="seg"
+          >
+            跌幅
+          </button>
+        </div>
       </div>
 
-      {/* Table */}
       {loading ? (
-        <div className="py-20 text-center text-sm text-[#6e7681]">載入中...</div>
+        <p className="py-20 text-center font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+          載入中
+        </p>
       ) : figures.length === 0 ? (
-        <div className="rounded-lg border border-[#30363d] bg-[#0d1117] py-20 text-center">
-          <p className="text-sm text-[#6e7681]">此期間暫無足夠資料</p>
-          <p className="mt-1 text-xs text-[#484f58]">需要至少兩個不同日期的價格快照</p>
+        <div className="py-20 text-center">
+          <p className="text-[15px] text-[var(--ink)]">此期間暫無足夠資料</p>
+          <p className="mt-2 text-[13px] text-[var(--ink-2)]">需要至少兩個不同日期的價格快照</p>
         </div>
       ) : (
-        <div>
-        {isFallback && (
-          <div className="mb-3 rounded-lg border border-[#C4A265]/30 bg-[#C4A265]/5 px-4 py-2 text-xs text-[#C4A265]">
-            此期間無新交易資料，目前顯示所有公仔與定價的比較排行
-          </div>
-        )}
-        <div className="overflow-x-auto rounded-lg border border-[#30363d]">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-[#30363d] bg-[#161b22]">
-                <th className="px-2 py-2 text-left text-[10px] font-medium text-[#8b949e] sm:px-3 sm:py-2.5 sm:text-xs">#</th>
-                <th className="px-2 py-2 text-left text-[10px] font-medium text-[#8b949e] sm:px-3 sm:py-2.5 sm:text-xs">公仔</th>
-                <th className="px-2 py-2 text-right text-[10px] font-medium text-[#8b949e] sm:px-3 sm:py-2.5 sm:text-xs">現價</th>
-                <th className="hidden px-2 py-2 text-right text-[10px] font-medium text-[#8b949e] sm:table-cell sm:px-3 sm:py-2.5 sm:text-xs">前價</th>
-                <th className="px-2 py-2 text-right text-[10px] font-medium text-[#8b949e] sm:px-3 sm:py-2.5 sm:text-xs">漲跌幅</th>
-                <th className="hidden px-3 py-2.5 text-right text-xs font-medium text-[#8b949e] sm:table-cell">vs 定價</th>
-              </tr>
-            </thead>
-            <tbody>
-              {figures.map((fig, i) => {
-                const isPositive = (fig.change_pct ?? 0) >= 0;
-                const color = isPositive ? upColor : downColor;
-                const arrow = isPositive ? "▲" : "▼";
-                return (
-                  <tr key={fig.id} className="border-b border-[#21262d] transition-colors hover:bg-[#161b22]">
-                    <td className="px-2 py-2.5 text-xs text-[#6e7681] sm:px-3 sm:text-sm">{i + 1}</td>
-                    <td className="px-3 py-2.5">
-                      <Link href={`/figures/${fig.id}`} className="flex items-center gap-2 hover:opacity-80">
-                        {fig.image_url && (
-                          <img src={fig.image_url} alt="" className="h-8 w-8 shrink-0 rounded border border-[#30363d] object-contain sm:h-10 sm:w-10" />
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-xs font-medium text-[#c9d1d9] sm:text-sm">{fig.name}</p>
-                          <p className="truncate text-[10px] text-[#6e7681]">{fig.manufacturer || "未知"}</p>
-                        </div>
-                      </Link>
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-2.5 text-right text-xs font-medium text-[#c9d1d9] sm:px-3 sm:text-sm">
-                      {fig.current_median_price ? fmt(fig.current_median_price, currency) : "--"}
-                    </td>
-                    <td className="hidden whitespace-nowrap px-2 py-2.5 text-right text-xs text-[#8b949e] sm:table-cell sm:px-3 sm:text-sm">
-                      {fig.previous_price ? fmt(fig.previous_price, currency) : "--"}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-2.5 text-right sm:px-3">
-                      <span style={{ color }} className="text-xs font-bold sm:text-sm">
+        <>
+          {isFallback && (
+            <p className="border-b border-[var(--rule-faint)] py-3 text-[13px] text-[var(--ink-2)]">
+              此期間無新交易資料，目前顯示所有公仔與定價的比較排行
+            </p>
+          )}
+
+          <div className="tbl-scroll pt-4">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>公仔</th>
+                  <th>現價</th>
+                  <th className="hidden sm:table-cell">前價</th>
+                  <th>漲跌幅</th>
+                  <th className="hidden sm:table-cell">vs 定價</th>
+                </tr>
+              </thead>
+              <tbody>
+                {figures.map((fig, i) => {
+                  const isPositive = (fig.change_pct ?? 0) >= 0;
+                  const color = isPositive ? upColor : downColor;
+                  const arrow = isPositive ? "▲" : "▼";
+                  return (
+                    <tr key={fig.id}>
+                      <td>{i + 1}</td>
+                      <td className="k" style={{ whiteSpace: "normal", minWidth: 220 }}>
+                        <Link href={`/figures/${fig.id}`} className="flex items-center gap-3">
+                          {fig.image_url && (
+                            <img
+                              src={fig.image_url}
+                              alt=""
+                              className="h-10 w-10 shrink-0 border border-[var(--rule-faint)] object-contain"
+                            />
+                          )}
+                          <span className="min-w-0">
+                            <span className="block truncate font-sans text-[13.5px] text-[var(--ink)]">
+                              {fig.name}
+                            </span>
+                            <span className="mt-0.5 block truncate text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
+                              {fig.manufacturer || "未知"}
+                            </span>
+                          </span>
+                        </Link>
+                      </td>
+                      <td className="k">
+                        {fig.current_median_price ? fmt(fig.current_median_price, currency) : "--"}
+                      </td>
+                      <td className="hidden sm:table-cell">
+                        {fig.previous_price ? fmt(fig.previous_price, currency) : "--"}
+                      </td>
+                      <td style={{ color }}>
                         {arrow} {Math.abs(fig.change_pct ?? 0).toFixed(1)}%
-                      </span>
-                    </td>
-                    <td className="hidden px-3 py-2.5 text-right sm:table-cell">
-                      {fig.vs_retail_pct != null ? (
-                        <span style={{ color: fig.vs_retail_pct >= 0 ? upColor : downColor }} className="text-xs">
-                          {fig.vs_retail_pct >= 0 ? "▲" : "▼"} {Math.abs(fig.vs_retail_pct).toFixed(1)}%
-                        </span>
-                      ) : (
-                        <span className="text-[#484f58]">--</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        </div>
+                      </td>
+                      <td className="hidden sm:table-cell">
+                        {fig.vs_retail_pct != null ? (
+                          <span style={{ color: fig.vs_retail_pct >= 0 ? upColor : downColor }}>
+                            {fig.vs_retail_pct >= 0 ? "▲" : "▼"} {Math.abs(fig.vs_retail_pct).toFixed(1)}%
+                          </span>
+                        ) : (
+                          "--"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );

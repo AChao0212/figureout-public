@@ -1,141 +1,119 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "./AuthContext";
 import { useColorMode } from "./ColorModeContext";
 
-const CURRENCIES = [
-  { code: "TWD", label: "NT$" },
-  { code: "JPY", label: "\u00a5" },
-  { code: "USD", label: "$" },
-  { code: "CNY", label: "\u00a5" },
-];
-
+/**
+ * Account control for the top bar.
+ *
+ * Display currency used to live in here; it moved to the bar itself because
+ * it is needed while reading prices, not while managing an account. Everything
+ * else the menu carried is unchanged: role, report count, contributor board,
+ * admin entry, gain/loss colour convention, sign out.
+ */
 export default function UserMenu() {
   const { user, token, logout, loading, refreshUser } = useAuth();
   const { colorMode, toggleColorMode } = useColorMode();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  // Read current currency from URL or localStorage
-  const [currency, setCurrencyState] = useState("TWD");
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const saved = localStorage.getItem("figureout_currency");
-    const fromUrl = new URLSearchParams(window.location.search).get("currency");
-    setCurrencyState(fromUrl || saved || "TWD");
-  }, []);
-
-  const router = useRouter();
-  const pathname = usePathname();
-  const setCurrency = (code: string) => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("figureout_currency", code);
-    setCurrencyState(code);
-    // Soft navigation preserves any unsaved form state — no hard reload.
-    const params = new URLSearchParams(window.location.search);
-    params.set("currency", code);
-    router.replace(`${pathname}?${params.toString()}`);
-  };
-
   useEffect(() => {
     if (!open) return;
-    const handler = (e: MouseEvent) => {
+    const away = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
   }, [open]);
 
-  // Retry fetching user profile if token is set but user failed to load.
-  // This covers the case where initial /user/me failed due to transient error.
+  // Token present but profile never arrived (transient failure) — retry once.
   useEffect(() => {
-    if (token && !user && !loading) {
-      refreshUser();
-    }
+    if (token && !user && !loading) refreshUser();
   }, [token, user, loading, refreshUser]);
+
+  const barBtn =
+    "font-mono text-[11px] tracking-[0.22em] uppercase px-3 py-2 transition-colors";
 
   if (loading) return null;
 
-  // No token at all → show login link
   if (!token) {
     return (
-      <a href="/login" className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#C4A265] transition-colors hover:border-[#C4A265]/50 hover:bg-[#C4A265]/10">
+      <a href="/login" className={`${barBtn} text-[var(--ink)] hover:opacity-70`}>
         登入
       </a>
     );
   }
 
-  // Token exists but user object not loaded yet — show placeholder
   if (!user) {
-    return (
-      <div className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs text-[#6e7681]">
-        載入中...
-      </div>
-    );
+    return <span className={`${barBtn} text-[var(--muted)]`}>載入中</span>;
   }
 
-  // Logged in: user button with dropdown including settings
+  const row =
+    "block w-full px-4 py-2.5 text-left text-[13px] text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]";
+
   return (
     <div className="relative" ref={ref}>
       <button
+        type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#c9d1d9] transition-colors hover:border-[#C4A265]/50"
+        className={`${barBtn} text-[var(--ink-2)] hover:text-[var(--ink)]`}
+        aria-expanded={open}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-          <circle cx="12" cy="7" r="4" />
-        </svg>
         {user.display_name || user.username}
       </button>
+
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border border-[#30363d] bg-[#161b22] py-1 shadow-xl">
-          <div className="border-b border-[#30363d] px-3 py-2">
-            <div className="flex items-center gap-1.5">
-              <p className="text-xs font-medium text-[#c9d1d9]">{user.display_name || user.username}</p>
-              {user.role === "admin" && <span className="rounded-full bg-[#C4A265]/20 px-1.5 py-0.5 text-[9px] text-[#C4A265]">管理員</span>}
-              {user.role === "editor" && <span className="rounded-full bg-blue-900/30 px-1.5 py-0.5 text-[9px] text-blue-400">編輯者</span>}
-            </div>
-            <p className="text-[10px] text-[#6e7681]">{user.report_count} 筆回報</p>
+        <div className="absolute right-0 top-full z-50 w-56 border border-[var(--rule)] bg-[var(--ground)]">
+          <div className="border-b border-[var(--rule)] px-4 py-3">
+            <p className="text-[13px] text-[var(--ink)]">
+              {user.display_name || user.username}
+            </p>
+            <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--muted)]">
+              {user.role === "admin"
+                ? "管理員"
+                : user.role === "editor"
+                ? "編輯者"
+                : "會員"}
+              {" · "}
+              {user.report_count} 筆回報
+            </p>
           </div>
-          <a href="/rankings" onClick={() => setOpen(false)} className="block px-3 py-2 text-xs text-[#8b949e] hover:bg-[#21262d] hover:text-[#c9d1d9]">
+
+          <a href="/rankings" onClick={() => setOpen(false)} className={row}>
             貢獻排行榜
           </a>
           {(user.role === "editor" || user.role === "admin") && (
-            <a href="/admin" onClick={() => setOpen(false)} className="block px-3 py-2 text-xs text-[#C4A265] hover:bg-[#21262d]">
+            <a href="/admin" onClick={() => setOpen(false)} className={row}>
               管理後台
             </a>
           )}
-          <div className="border-t border-[#30363d]">
-            <div className="px-3 py-2">
-              <p className="mb-1.5 text-[10px] font-medium text-[#6e7681]">顯示幣別</p>
-              <div className="flex gap-1">
-                {CURRENCIES.map((c) => (
-                  <button
-                    key={c.code}
-                    onClick={() => setCurrency(c.code)}
-                    className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-                      currency === c.code
-                        ? "bg-[#C4A265]/20 text-[#C4A265]"
-                        : "text-[#6e7681] hover:text-[#c9d1d9]"
-                    }`}
-                  >
-                    {c.code}
-                  </button>
-                ))}
-              </div>
-            </div>
+
+          <div className="border-t border-[var(--rule)]">
             <button
-              onClick={() => { toggleColorMode(); setOpen(false); }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-xs text-[#8b949e] hover:bg-[#21262d] hover:text-[#c9d1d9]"
+              type="button"
+              onClick={() => {
+                toggleColorMode();
+                setOpen(false);
+              }}
+              className={row}
             >
               {colorMode === "default" ? "漲紅跌綠 (台股)" : "漲綠跌紅 (美股)"}
-              <span className="ml-auto text-[10px] text-[#484f58]">切換</span>
+              <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                切換
+              </span>
             </button>
           </div>
-          <div className="border-t border-[#30363d]">
-            <button onClick={() => { logout(); setOpen(false); }} className="block w-full px-3 py-2 text-left text-xs text-[#f85149] hover:bg-[#21262d]">
+
+          <div className="border-t border-[var(--rule)]">
+            <button
+              type="button"
+              onClick={() => {
+                logout();
+                setOpen(false);
+              }}
+              className={row}
+            >
               登出
             </button>
           </div>

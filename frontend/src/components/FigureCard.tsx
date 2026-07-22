@@ -22,6 +22,12 @@ interface FigureCardProps {
   currency: string;
 }
 
+/**
+ * A tile is an image, a name, a maker and a number — no frame, no fill, no
+ * radius. The photograph is the only thing on the page allowed to carry
+ * colour, so the surrounding chrome stays out of its way. Each caption line
+ * holds exactly one text colour.
+ */
 export default function FigureCard({
   id,
   name,
@@ -39,58 +45,41 @@ export default function FigureCard({
   const hasPrice = current_median_price != null;
   const isUp = price_change_pct != null && price_change_pct >= 0;
   const isDown = price_change_pct != null && price_change_pct < 0;
-  const priceColor = isUp ? upColor : isDown ? downColor : "#C4A265";
 
   const renderPrice = () => {
     if (hasPrice) {
+      // The whole line takes the direction colour, so the row still reads as
+      // a single colour while the arrow keeps it legible without colour.
+      const colour = isUp ? upColor : isDown ? downColor : undefined;
       return (
-        <>
-          {price_change_pct != null && (
-            <span style={{ color: priceColor }} className="text-[10px]">
-              {isUp ? "▲" : "▼"}
-            </span>
-          )}
-          <span style={{ color: priceColor }} className="text-xs font-semibold">
-            {formatCurrency(current_median_price!, currency)}
-          </span>
-        </>
-      );
-    }
-    // No market price yet — fall back to retail, converted to the user's display
-    // currency so cards render consistently regardless of the source listing's currency.
-    if (retail_price && retail_currency) {
-      const retailDisplay = convertCurrency(retail_price, retail_currency, currency, liveRates);
-      return (
-        <span className="text-xs font-semibold text-[#6e7681]">
-          定價 {formatCurrency(retailDisplay, currency)}
+        <span className="p" style={colour ? { color: colour } : undefined}>
+          {price_change_pct != null && (isUp ? "▲ " : "▼ ")}
+          {formatCurrency(current_median_price!, currency)}
         </span>
       );
     }
-    return <span className="text-[10px] text-[#484f58]">暫無價格</span>;
+    if (retail_price && retail_currency) {
+      const retailDisplay = convertCurrency(retail_price, retail_currency, currency, liveRates);
+      return <span className="p">定價 {formatCurrency(retailDisplay, currency)}</span>;
+    }
+    return <span className="p text-[var(--muted)]">暫無成交</span>;
   };
 
   return (
-    <Link
-      href={`/figures/${id}`}
-      className="group relative flex flex-col overflow-hidden rounded-lg border border-[#30363d] bg-[#161b22] transition-shadow hover:border-[#484f58]"
-    >
-      {/* Watchlist heart overlay */}
-      <div className="absolute top-2 right-2 z-10">
-        <WatchlistButton figureId={id} size="sm" />
-      </div>
+    <Link href={`/figures/${id}`} className="cell group">
+      <figure className="shot">
+        <ImageWithFallback src={image_url} alt={name} className="h-full w-full" compact />
+        {/* revealed on hover / keyboard focus so the wall stays quiet at rest */}
+        <span className="absolute right-0 top-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          <WatchlistButton figureId={id} />
+        </span>
+      </figure>
 
-      <div className="aspect-[4/5] overflow-hidden bg-[#0d1117]">
-        <ImageWithFallback
-          src={image_url}
-          alt={name}
-          className="h-full w-full object-cover transition-transform group-hover:scale-105"
-        />
+      <div className="t">{name}</div>
+      <div className="mt-1 truncate font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
+        {manufacturer || "未知製造商"}
       </div>
-      <div className="p-2 sm:p-2.5">
-        <p className="line-clamp-2 min-h-[2rem] text-[11px] font-medium leading-4 sm:text-xs text-[#c9d1d9]">{name}</p>
-        <p className="mt-0.5 h-4 truncate text-[10px] leading-4 text-[#6e7681]">{manufacturer || "未知製造商"}</p>
-        <div className="mt-1 flex h-5 items-center gap-1">{renderPrice()}</div>
-      </div>
+      {renderPrice()}
     </Link>
   );
 }

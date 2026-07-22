@@ -191,15 +191,19 @@ function _searchHref(searchKey: string, value: string, extraParams?: Record<stri
 
 function Tag({ label, value, href, searchKey, extraParams }: { label: string; value?: string | null; href?: string; searchKey?: string; extraParams?: Record<string, string | undefined> }) {
   if (!value || HIDDEN_PLACEHOLDERS.has(value.trim())) return null;
-  const chip = "inline-flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2 py-0.5 text-xs transition-colors hover:border-[#C4A265]/50";
+  // No chip, no border, no fill — the label is mono and muted, the value is a
+  // plain link, so a row of these reads as text rather than as controls.
+  const wrap = "inline-flex items-baseline gap-1.5 text-[13px]";
+  const key = "font-mono text-[9.5px] uppercase tracking-[0.2em] text-[var(--muted)]";
+  const val = "text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]";
   if (searchKey && value.includes("、")) {
     const parts = value.split(MULTI_SPLIT).filter(Boolean);
     return (
       <>
         {parts.map((p, i) => (
-          <a key={i} href={_searchHref(searchKey, p, extraParams)} className={chip}>
-            {i === 0 && <span className="text-[#6e7681]">{label}</span>}
-            <span className="text-[#C4A265]">{p}</span>
+          <a key={i} href={_searchHref(searchKey, p, extraParams)} className={wrap}>
+            {i === 0 && <span className={key}>{label}</span>}
+            <span className={val}>{p}</span>
           </a>
         ))}
       </>
@@ -207,14 +211,14 @@ function Tag({ label, value, href, searchKey, extraParams }: { label: string; va
   }
   const finalHref = searchKey ? _searchHref(searchKey, value, extraParams) : href;
   return finalHref ? (
-    <a href={finalHref} className={chip}>
-      <span className="text-[#6e7681]">{label}</span>
-      <span className="text-[#C4A265]">{value}</span>
+    <a href={finalHref} className={wrap}>
+      <span className={key}>{label}</span>
+      <span className={val}>{value}</span>
     </a>
   ) : (
-    <span className="inline-flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2 py-0.5 text-xs">
-      <span className="text-[#6e7681]">{label}</span>
-      <span className="text-[#c9d1d9]">{value}</span>
+    <span className={wrap}>
+      <span className={key}>{label}</span>
+      <span className="text-[var(--ink-2)]">{value}</span>
     </span>
   );
 }
@@ -228,32 +232,32 @@ const HIDDEN_PLACEHOLDERS = new Set(["未知", "未分類", "待分類", "其他
 function InfoRow({ label, value, href, searchKey, extraParams }: { label: string; value?: string | null; href?: string; searchKey?: string; extraParams?: Record<string, string | undefined> }) {
   // Don't render the row at all if there's nothing meaningful to show.
   if (!value || HIDDEN_PLACEHOLDERS.has(value.trim())) return null;
-  const display = value;
-  const isUnknown = false;
-  if (searchKey && value && value.includes("、")) {
+  const val = "text-[14px] leading-snug text-[var(--ink)]";
+  const link = `${val} transition-colors hover:text-[var(--ink-2)]`;
+  if (searchKey && value.includes("、")) {
     const parts = value.split(MULTI_SPLIT).filter(Boolean);
     return (
-      <div className="flex items-start gap-2 py-1">
-        <span className="w-16 shrink-0 text-xs text-[#6e7681]">{label}</span>
-        <span className="min-w-0 break-words text-sm">
+      <div className="border-b border-[var(--rule-faint)] py-4 pr-5">
+        <span className="lbl">{label}</span>
+        <span className={val}>
           {parts.map((p, i) => (
             <span key={i}>
-              <a href={_searchHref(searchKey, p, extraParams)} className="text-[#C4A265] hover:underline">{p}</a>
-              {i < parts.length - 1 && <span className="text-[#6e7681]">、</span>}
+              <a href={_searchHref(searchKey, p, extraParams)} className={link}>{p}</a>
+              {i < parts.length - 1 && <span className="text-[var(--muted)]">、</span>}
             </span>
           ))}
         </span>
       </div>
     );
   }
-  const finalHref = searchKey && value ? _searchHref(searchKey, value, extraParams) : href;
+  const finalHref = searchKey ? _searchHref(searchKey, value, extraParams) : href;
   return (
-    <div className="flex items-start gap-2 py-1">
-      <span className="w-16 shrink-0 text-xs text-[#6e7681]">{label}</span>
-      {finalHref && !isUnknown ? (
-        <a href={finalHref} className="min-w-0 break-words text-sm text-[#C4A265] hover:underline">{display}</a>
+    <div className="border-b border-[var(--rule-faint)] py-4 pr-5">
+      <span className="lbl">{label}</span>
+      {finalHref ? (
+        <a href={finalHref} className={`block break-words ${link}`}>{value}</a>
       ) : (
-        <span className={`min-w-0 break-words text-sm ${isUnknown ? "text-[#484f58]" : "text-[#c9d1d9]"}`}>{display}</span>
+        <span className={`block break-words ${val}`}>{value}</span>
       )}
     </div>
   );
@@ -414,214 +418,167 @@ export default async function FigureDetailPage({
   const chartData = deduplicatePriceHistory(figure.price_history);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+    <div className="col pb-10 pt-[clamp(20px,3.5vh,38px)]">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: safeJsonLd(buildJsonLd(figure)) }}
       />
       <PageTracker page={`/figures/${id}`} figureId={parseInt(id)} />
 
-      {/* Breadcrumb */}
       {(figure.franchise_name || figure.character_name) && (
-        <nav className="mb-4 flex flex-wrap items-center text-xs text-[#6e7681]">
+        <nav className="flex flex-wrap items-center gap-x-1.5 font-mono text-[9.5px] uppercase tracking-[0.2em] text-[var(--muted)]">
           {figure.franchise_name && (() => {
             const parts = figure.franchise_name.includes("、")
               ? figure.franchise_name.split(/\s*、\s*/).filter(Boolean)
               : [figure.franchise_name];
-            return (
-              <>
-                {parts.map((p, i) => (
-                  <span key={i}>
-                    <a href={`/search?franchise=${encodeURIComponent(p)}`} className="text-[#C4A265] hover:underline">{p}</a>
-                    {i < parts.length - 1 && <span className="text-[#6e7681]">、</span>}
-                  </span>
-                ))}
-              </>
-            );
+            return parts.map((p, i) => (
+              <span key={i}>
+                <a href={`/search?franchise=${encodeURIComponent(p)}`} className="transition-colors hover:text-[var(--ink)]">{p}</a>
+                {i < parts.length - 1 && <span>、</span>}
+              </span>
+            ));
           })()}
-          {figure.franchise_name && figure.character_name && <span className="mx-1.5">&gt;</span>}
+          {figure.franchise_name && figure.character_name && <span>/</span>}
           {figure.character_name && (() => {
             const fr = figure.franchise_name ? `&franchise=${encodeURIComponent(figure.franchise_name)}` : "";
             const parts = figure.character_name.includes("、")
               ? figure.character_name.split(/\s*、\s*/).filter(Boolean)
               : [figure.character_name];
-            return (
-              <>
-                {parts.map((p, i) => (
-                  <span key={i}>
-                    <a
-                      href={`/search?character=${encodeURIComponent(p)}${fr}`}
-                      className="text-[#C4A265] hover:underline"
-                    >{p}</a>
-                    {i < parts.length - 1 && <span className="text-[#6e7681]">、</span>}
-                  </span>
-                ))}
-              </>
-            );
+            return parts.map((p, i) => (
+              <span key={i}>
+                <a href={`/search?character=${encodeURIComponent(p)}${fr}`} className="transition-colors hover:text-[var(--ink)]">{p}</a>
+                {i < parts.length - 1 && <span>、</span>}
+              </span>
+            ));
           })()}
-          <span className="mx-1.5">&gt;</span>
-          <span className="text-[#8b949e]">{figure.name}</span>
         </nav>
       )}
 
-      {/* 1. Hero: Image + Title + Tags + Price Summary + Condition Prices — flex row */}
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:gap-6">
-        {/* Image */}
-        <div className="shrink-0 sm:w-[300px]">
-          <div className="rounded-lg border border-[#30363d] bg-[#161b22] sm:h-full">
-            <ImageWithFallback
-              src={figure.image_url}
-              alt={figure.name}
-              className="h-full w-full min-h-[200px] object-contain"
+      {/* Hero — the number is the point, so the photograph yields the wider
+          column to it and the price becomes the display type. */}
+      <div className="grid grid-cols-1 items-start gap-[clamp(28px,5vw,64px)] pb-[clamp(30px,5vh,54px)] pt-5 md:grid-cols-[minmax(0,1fr)_minmax(0,300px)]">
+        <div>
+          <h1 className="display">{figure.name}</h1>
+          {figure.original_name && (
+            <p className="mt-3 font-mono text-[11px] tracking-[0.1em] text-[var(--ink-2)]">
+              {figure.original_name}
+            </p>
+          )}
+          <div className="mt-3">
+            <FigureRating figureId={id} initialAvg={figure.rating_avg ?? null} initialCount={figure.rating_count ?? 0} />
+          </div>
+
+          {/* every per-figure action the app has, as one quiet row */}
+          <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-[var(--rule-faint)] pt-4">
+            <WatchlistButton figureId={figure.id} variant="inline" />
+            <ErrorReportButton figureId={parseInt(id)} />
+            <AdminEditButton figureId={figure.id} />
+          </div>
+
+          <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2">
+            <Tag label="製造商" value={figure.manufacturer} searchKey="manufacturer" />
+            <Tag label="比例" value={figure.scale} href={figure.scale ? `/search?scale=${encodeURIComponent(figure.scale)}` : undefined} />
+            <Tag label="系列" value={figure.series} searchKey="series" />
+            <Tag label="版本" value={figure.version_name} href={figure.version_name ? `/search?q=${encodeURIComponent(figure.version_name)}` : undefined} />
+            <Tag label="原型師" value={figure.sculptor} searchKey="sculptor" />
+            <Tag label="塗裝師" value={figure.painter} searchKey="painter" />
+            <Tag label="原畫" value={figure.illustrator} searchKey="illustrator" />
+          </div>
+
+          {/* 價格摘要 and 各狀態價格 merged: 全部 leads the tabs, each tab
+              re-points the same median / average / low / high set. */}
+          <div className="mt-[clamp(26px,4vh,44px)] border-t border-[var(--rule)] pt-[clamp(20px,3.2vh,32px)]">
+            <ConditionPriceTabs
+              prices={figure.condition_prices}
+              currency={currency}
+              overall={{
+                avg_price: figure.current_avg_price ?? null,
+                median_price: figure.current_median_price ?? null,
+                min_price: overallMin ?? null,
+                max_price: overallMax ?? null,
+              }}
+              changePct={figure.price_change_pct ?? null}
+              retailLine={
+                figure.retail_price != null
+                  ? `定價 ${figure.retail_price_display != null ? formatPrice(figure.retail_price_display, currency) : "--"} (¥${figure.retail_price.toLocaleString()})`
+                  : null
+              }
             />
           </div>
         </div>
 
-        {/* Title + Tags + Price Summary + Condition Prices */}
-        <div className="flex-1 space-y-3">
-          <div>
-            <div className="flex items-start gap-2"><h1 className="flex-1 text-xl font-bold text-[#c9d1d9] sm:text-2xl">{figure.name}</h1><WatchlistButton figureId={figure.id} size="md" /><ErrorReportButton figureId={parseInt(id)} /><AdminEditButton figureId={figure.id} /></div>
-            {figure.original_name && <p className="mt-0.5 text-sm text-[#6e7681]">{figure.original_name}</p>}
-            <div className="mt-1.5">
-              <FigureRating figureId={id} initialAvg={figure.rating_avg ?? null} initialCount={figure.rating_count ?? 0} />
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <Tag label="製造商" value={figure.manufacturer} searchKey="manufacturer" />
-              <Tag label="比例" value={figure.scale} href={figure.scale ? `/search?scale=${encodeURIComponent(figure.scale)}` : undefined} />
-              <Tag label="系列" value={figure.series} searchKey="series" />
-              <Tag label="版本" value={figure.version_name} href={figure.version_name ? `/search?q=${encodeURIComponent(figure.version_name)}` : undefined} />
-              <Tag label="原型師" value={figure.sculptor} searchKey="sculptor" />
-              <Tag label="塗裝師" value={figure.painter} searchKey="painter" />
-              <Tag label="原畫" value={figure.illustrator} searchKey="illustrator" />
-            </div>
-          </div>
-
-          {/* Price Summary */}
-          <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#6e7681]">價格摘要</h2>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <div>
-                <p className="text-xs text-[#6e7681]">平均</p>
-                <p className="text-base font-bold text-[#C4A265] sm:text-xl">
-                  {figure.current_avg_price != null ? formatPrice(figure.current_avg_price, currency) : "--"}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-[#6e7681]">中位數</p>
-                <p className="text-base font-bold text-[#c9d1d9] sm:text-xl">
-                  {figure.current_median_price != null ? formatPrice(figure.current_median_price, currency) : "--"}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-[#6e7681]">最低</p>
-                <p className="text-base font-bold text-[#c9d1d9] sm:text-xl">
-                  {overallMin != null ? formatPrice(overallMin, currency) : "--"}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-[#6e7681]">最高</p>
-                <p className="text-base font-bold text-[#c9d1d9] sm:text-xl">
-                  {overallMax != null ? formatPrice(overallMax, currency) : "--"}
-                </p>
-              </div>
-            </div>
-            {figure.retail_price != null && (
-              <p className="mt-3 text-xs text-[#6e7681]">
-                定價 <span className="text-[#8b949e]">{figure.retail_price_display != null ? formatPrice(figure.retail_price_display, currency) : "--"} ({"\u00a5"}{figure.retail_price.toLocaleString()})</span>
-              </p>
-            )}
-            {figure.price_change_pct != null && (
-              <p className="mt-1 text-xs">
-                <span className="text-[#6e7681]">vs 定價</span>{" "}
-                <span className={figure.price_change_pct >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}>
-                  {figure.price_change_pct >= 0 ? "+" : ""}{figure.price_change_pct.toFixed(1)}%
-                </span>
-              </p>
-            )}
-          </div>
-
-          {/* Condition Prices — tabbed view */}
-          {figure.condition_prices.length > 0 && (
-            <ConditionPriceTabs prices={figure.condition_prices} currency={currency} />
-          )}
-        </div>
+        <figure className="m-0 aspect-[3/4] overflow-hidden border border-[var(--rule)] bg-[var(--ground-lift)]">
+          <ImageWithFallback
+            src={figure.image_url}
+            alt={figure.name}
+            className="h-full w-full object-contain"
+          />
+        </figure>
       </div>
 
-      {/* ReportForm — prominent, full width */}
-      <section className="mb-6">
+      <section className="rule pt-[clamp(30px,5vh,54px)]">
         <ReportForm figureId={id} />
       </section>
 
-
-      {/* 3. Price Chart */}
-      <section className="mb-6">
-        <h2 className="mb-3 text-base font-semibold text-[#c9d1d9]">價格走勢</h2>
-        <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-3 sm:p-4">
-          <PriceChart data={chartData} listings={figure.recent_listings} dataByCondition={figure.price_history_by_condition ? Object.fromEntries(Object.entries(figure.price_history_by_condition).map(([k, v]) => [k, deduplicatePriceHistory(v)])) : undefined} currency={currency} />
-        </div>
+      <section className="pt-[clamp(32px,5vh,58px)]">
+        <h2 className="sec-title pb-5">價格走勢</h2>
+        <PriceChart data={chartData} listings={figure.recent_listings} dataByCondition={figure.price_history_by_condition ? Object.fromEntries(Object.entries(figure.price_history_by_condition).map(([k, v]) => [k, deduplicatePriceHistory(v)])) : undefined} currency={currency} />
       </section>
 
-      {/* 4. Recent Listings */}
-      <section className="mb-6">
-        <h2 className="mb-3 text-base font-semibold text-[#c9d1d9]">近期成交紀錄</h2>
+      <section className="pt-[clamp(32px,5vh,58px)]">
+        <h2 className="sec-title pb-5">近期成交紀錄</h2>
         <ListingsTable listings={figure.recent_listings} currency={currency} figureId={parseInt(id)} />
       </section>
 
-      {/* 5. Detail Info */}
-      <section className="mb-6">
-        <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[#6e7681]">商品資訊</h2>
-          <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
-            <InfoRow label="製造商" value={figure.manufacturer} searchKey="manufacturer" />
-            <InfoRow label="比例" value={figure.scale} href={figure.scale ? `/search?scale=${encodeURIComponent(figure.scale)}` : undefined} />
-            <InfoRow label="系列" value={figure.series} searchKey="series" />
-            <InfoRow label="版本" value={figure.version_name} />
-            <InfoRow
-              label="角色"
-              value={figure.character_name}
-              searchKey="character"
-              extraParams={figure.franchise_name ? { franchise: figure.franchise_name } : undefined}
-            />
-            <InfoRow label="作品" value={figure.franchise_name} searchKey="franchise" />
-            <InfoRow label="原型師" value={figure.sculptor} searchKey="sculptor" />
-            <InfoRow label="塗裝師" value={figure.painter} searchKey="painter" />
-            <InfoRow label="原畫" value={figure.illustrator} searchKey="illustrator" />
-            <InfoRow label="素材" value={figure.material} />
-            <InfoRow label="尺寸" value={figure.dimensions} />
-            <InfoRow label="類型" value={figure.figure_type} />
-            <InfoRow label="性別" value={figure.gender} />
-            <InfoRow label="年齡分級" value={figure.age_rating} />
-            <InfoRow label="發售年份" value={figure.release_year?.toString()} />
-            <InfoRow label="發售日期" value={figure.release_date} />
-            <InfoRow label="再版日期" value={figure.reissue_dates} />
-            {figure.official_url && (
-              <div className="flex items-start gap-2 py-1">
-                <span className="w-16 shrink-0 text-xs text-[#6e7681]">官方頁面</span>
-                <a
-                  href={figure.official_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="min-w-0 break-words text-sm text-[#C4A265] hover:underline"
-                >
-                  前往 ↗
-                </a>
-              </div>
-            )}
-          </div>
+      <section className="pt-[clamp(32px,5vh,58px)]">
+        <h2 className="sec-title pb-5">商品資訊</h2>
+        <div className="grid grid-cols-2 border-t border-[var(--rule)] sm:grid-cols-3 lg:grid-cols-4">
+          <InfoRow label="製造商" value={figure.manufacturer} searchKey="manufacturer" />
+          <InfoRow label="比例" value={figure.scale} href={figure.scale ? `/search?scale=${encodeURIComponent(figure.scale)}` : undefined} />
+          <InfoRow label="系列" value={figure.series} searchKey="series" />
+          <InfoRow label="版本" value={figure.version_name} />
+          <InfoRow
+            label="角色"
+            value={figure.character_name}
+            searchKey="character"
+            extraParams={figure.franchise_name ? { franchise: figure.franchise_name } : undefined}
+          />
+          <InfoRow label="作品" value={figure.franchise_name} searchKey="franchise" />
+          <InfoRow label="原型師" value={figure.sculptor} searchKey="sculptor" />
+          <InfoRow label="塗裝師" value={figure.painter} searchKey="painter" />
+          <InfoRow label="原畫" value={figure.illustrator} searchKey="illustrator" />
+          <InfoRow label="素材" value={figure.material} />
+          <InfoRow label="尺寸" value={figure.dimensions} />
+          <InfoRow label="類型" value={figure.figure_type} />
+          <InfoRow label="性別" value={figure.gender} />
+          <InfoRow label="年齡分級" value={figure.age_rating} />
+          <InfoRow label="發售年份" value={figure.release_year?.toString()} />
+          <InfoRow label="發售日期" value={figure.release_date} />
+          <InfoRow label="再版日期" value={figure.reissue_dates} />
+          {figure.official_url && (
+            <div className="border-b border-[var(--rule-faint)] py-4 pr-5">
+              <span className="lbl">官方頁面</span>
+              <a
+                href={figure.official_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block text-[14px] text-[var(--ink)] transition-colors hover:text-[var(--ink-2)]"
+              >
+                前往 ↗
+              </a>
+            </div>
+          )}
         </div>
       </section>
 
-      {/* 6. Community Notes */}
-      <section className="mb-6">
+      <section className="pt-[clamp(32px,5vh,58px)]">
         <FigureNotes figureId={id} />
       </section>
 
-      {/* 7. Trading Board */}
-      <section className="mb-6">
+      <section className="pt-[clamp(32px,5vh,58px)]">
         <TradingBoard figureId={id} />
       </section>
 
-      {/* 8. Related Figures */}
       {(() => {
         const seen = new Set<number>();
         const unique = (figure.related_figures || []).filter((f) => {
@@ -630,8 +587,8 @@ export default async function FigureDetailPage({
           return true;
         });
         return unique.length > 0 ? (
-          <section className="mb-8">
-            <h2 className="mb-3 text-base font-semibold text-[#c9d1d9]">相關商品</h2>
+          <section className="pt-[clamp(32px,5vh,58px)]">
+            <h2 className="sec-title pb-5">相關商品</h2>
             <RelatedGrid figures={unique} currency={currency} />
           </section>
         ) : null;

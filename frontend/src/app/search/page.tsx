@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import SearchBar from "@/components/SearchBar";
 import SearchResultsGrid from "@/components/SearchResultsGrid";
+import Pagination from "@/components/Pagination";
 
 export const metadata: Metadata = {
   title: "搜尋公仔",
@@ -33,12 +34,17 @@ interface Figure {
 const PAGE_SIZE = 24;
 
 async function searchFigures(params: Record<string, string>): Promise<{ figures: Figure[]; total: number }> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  // Server-side: prefer the internal URL so the request stays inside the compose
+  // network instead of going back out through Cloudflare (which can ETIMEDOUT
+  // from inside the container) — same rule the home page already follows.
+  const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   try {
     const searchParams = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
       if (v) searchParams.set(k, v);
     }
+    // Grids render eight fields; the default shape carries thirty.
+    searchParams.set("fields", "card");
     const res = await fetch(`${apiUrl}/figures?${searchParams.toString()}`, {
       cache: "no-store",
     });
@@ -115,109 +121,62 @@ export default async function SearchPage({
   ];
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mb-6 max-w-lg">
-        <SearchBar defaultValue={q} />
-      </div>
+    <div className="col pb-10 pt-[clamp(24px,4.5vh,46px)]">
+      <SearchBar defaultValue={q} />
 
       {hasQuery && (
-        <div className="mb-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-[#8b949e]">
-              搜尋結果：{" "}
-              <span className="font-medium text-[#c9d1d9]">{filterLabels.join(" · ")}</span>
-              <span className="ml-2 text-[#6e7681]">({total} 筆)</span>
-            </p>
+        <div className="flex flex-col gap-4 pt-[clamp(22px,3.5vh,34px)]">
+          {/* label above value — the row never mixes two text colours */}
+          <div>
+            <span className="lbl">搜尋條件 · {total.toLocaleString("en-US")} 筆</span>
+            <p className="text-[15px] text-[var(--ink)]">{filterLabels.join(" · ")}</p>
           </div>
-          {/* Sort - scrollable on mobile */}
-          <div className="flex items-center gap-1.5">
-            <span className="shrink-0 text-xs text-[#6e7681]">排序</span>
-            <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-none">
-              {sortOptions.map((opt) => (
-                <Link
-                  key={opt.value}
-                  href={buildUrl(baseParams, { sort: opt.value, page: "1" })}
-                  className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] transition-colors ${
-                    sort === opt.value
-                      ? "border-[#C4A265] bg-[#C4A265]/20 text-[#C4A265]"
-                      : "border-[#30363d] bg-[#0d1117] text-[#8b949e] hover:border-[#484f58] hover:text-[#c9d1d9]"
-                  }`}
-                >
-                  {opt.label}
-                </Link>
-              ))}
-            </div>
+
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <span className="mono-sm text-[var(--muted)]">排序</span>
+            {sortOptions.map((opt) => (
+              <Link
+                key={opt.value}
+                href={buildUrl(baseParams, { sort: opt.value, page: "1" })}
+                className={`mono-sm transition-colors ${
+                  sort === opt.value
+                    ? "text-[var(--ink)]"
+                    : "text-[var(--ink-2)] hover:text-[var(--ink)]"
+                }`}
+              >
+                {opt.label}
+              </Link>
+            ))}
           </div>
         </div>
       )}
 
       {figures.length === 0 && hasQuery ? (
-        <div className="rounded-lg border border-[#30363d] bg-[#0d1117] p-10 text-center">
-          <p className="text-base text-[#8b949e]">找不到相關公仔</p>
-          <p className="mt-1 text-sm text-[#6e7681]">試試其他關鍵字，或確認拼字是否正確。</p>
-          <Link href="/submit" className="mt-3 inline-block text-sm text-[#C4A265] hover:underline">
-            找不到你的公仔？點此提交
+        <div className="rule mt-[clamp(22px,3.5vh,34px)] py-12 text-center">
+          <p className="text-[16px] text-[var(--ink)]">找不到相關公仔</p>
+          <p className="mt-2 text-[14px] text-[var(--ink-2)]">
+            試試其他關鍵字，或確認拼字是否正確。
+          </p>
+          <Link
+            href="/submit"
+            className="mono-sm mt-5 inline-block text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]"
+          >
+            提交這隻公仔 ↗
           </Link>
         </div>
       ) : (
-        <div>
+        <div className="pt-[clamp(20px,3vh,30px)]">
           <SearchResultsGrid figures={figures} currency={currency} />
 
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-1.5">
-              {page > 1 && (
-                <Link
-                  href={buildUrl(baseParams, { page: String(page - 1) })}
-                  className="rounded-lg border border-[#30363d] bg-[#161b22] px-3 py-2 text-xs text-[#8b949e] hover:border-[#484f58] hover:text-[#c9d1d9]"
-                >
-                  上一頁
-                </Link>
-              )}
-              {(() => {
-                const pages: (number | string)[] = [];
-                if (totalPages <= 5) {
-                  for (let i = 1; i <= totalPages; i++) pages.push(i);
-                } else {
-                  pages.push(1);
-                  if (page > 3) pages.push("...");
-                  for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
-                  if (page < totalPages - 2) pages.push("...");
-                  pages.push(totalPages);
-                }
-                return pages.map((p, idx) =>
-                  typeof p === "string" ? (
-                    <span key={`ellipsis-${idx}`} className="px-1.5 py-2 text-xs text-[#6e7681]">...</span>
-                  ) : (
-                    <Link
-                      key={p}
-                      href={buildUrl(baseParams, { page: String(p) })}
-                      className={`rounded-lg border px-2.5 py-2 text-xs transition-colors sm:px-3 ${
-                        p === page
-                          ? "border-[#C4A265] bg-[#C4A265]/20 text-[#C4A265]"
-                          : "border-[#30363d] bg-[#161b22] text-[#8b949e] hover:border-[#484f58] hover:text-[#c9d1d9]"
-                      }`}
-                    >
-                      {p}
-                    </Link>
-                  )
-                );
-              })()}
-              {page < totalPages && (
-                <Link
-                  href={buildUrl(baseParams, { page: String(page + 1) })}
-                  className="rounded-lg border border-[#30363d] bg-[#161b22] px-3 py-1.5 text-xs text-[#8b949e] hover:border-[#484f58] hover:text-[#c9d1d9]"
-                >
-                  下一頁
-                </Link>
-              )}
-            </div>
-          )}
+          <Pagination page={page} totalPages={totalPages} basePath="/search" params={baseParams} />
 
           {figures.length > 0 && (
-            <p className="mt-4 text-center text-xs text-[#6e7681]">
-              <Link href="/submit" className="text-[#C4A265] hover:underline">
-                找不到想要的公仔？提交新公仔
+            <p className="mt-6 text-center">
+              <Link
+                href="/submit"
+                className="mono-sm text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]"
+              >
+                找不到想要的公仔?提交新公仔 ↗
               </Link>
             </p>
           )}

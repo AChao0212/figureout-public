@@ -1,30 +1,330 @@
 @import "tailwindcss";
 
-@theme inline {
-  --color-background: #0d1117;
-  --color-foreground: #e6edf3;
-  --color-accent: #C4A265;
-  --color-accent-hover: #D4B275;
-  --color-accent-soft: rgba(196, 162, 101, 0.1);
-  --color-card: #161b22;
-  --color-card-hover: #1c2333;
-  --color-border: #30363d;
-  --color-muted: #8b949e;
-  --font-sans: var(--font-inter);
+/* ────────── HarmonyOS Sans TC ──────────
+ * One family covers Latin + 繁體 glyphs, so the site needs no second face
+ * for Chinese. Bold (700) is deliberately NOT loaded: this design builds
+ * hierarchy from size and brightness, never weight, and each CJK weight
+ * costs ~4MB. Licence: HarmonyOS Sans Free License — attribution kept at
+ * /fonts/HarmonyOS_Sans_LICENSE.txt. */
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('/fonts/HarmonyOS_Sans_TC_Light.ttf') format('truetype');
+  font-weight: 300; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('/fonts/HarmonyOS_Sans_TC_Regular.ttf') format('truetype');
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('/fonts/HarmonyOS_Sans_TC_Medium.ttf') format('truetype');
+  font-weight: 500; font-style: normal; font-display: swap;
 }
 
+/* ────────── tokens ──────────
+ * Warm-neutral achromatic shell. Every grey is R>G>B so the greys read as
+ * chosen rather than inherited (the old palette was GitHub's #0d1117 family,
+ * which is blue-biased). There is NO accent hue: the only colour in the
+ * product comes from figure photography and from price direction, because
+ * ~39k saturated product shots are the content and the chrome is their frame. */
 :root {
-  --accent: #C4A265;
-  --accent-soft: rgba(196, 162, 101, 0.1);
+  --ground:      #08080a;
+  --ground-lift: #0d0d10;
+  --ink:         #f2eee6;
+  --ink-2:       #9d988e;
+  --muted:       #847d71;
+  --rule:        rgba(242, 238, 230, .13);
+  --rule-faint:  rgba(242, 238, 230, .06);
+
+  /* The only two hues in the product, and they are semantic, never
+   * decorative. Desaturated and warm-leaning so they sit inside the
+   * neutral ramp instead of shouting over the photography. */
+  --hue-red:   #c97766;
+  --hue-green: #7cb088;
+  /* Taiwan/Asia convention is the default: 紅漲綠跌. ColorModeContext
+   * flips this for readers who expect the Western mapping. */
+  --up:   var(--hue-red);
+  --down: var(--hue-green);
+
+  --col: 1160px;
+  --pad: clamp(24px, 4.5vw, 60px);
+  --bar: 56px;
+
+  --font-han: 'HarmonyOS Sans', "PingFang TC", "Microsoft JhengHei",
+              "Heiti TC", -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+               "Liberation Mono", monospace;
 }
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-rule: var(--rule);
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --font-sans: var(--font-han);
+  --font-mono: var(--font-mono);
+}
+
+/* "reversed" swaps ONLY which hue means up — it is a gain/loss convention
+ * toggle (紅漲綠跌 ↔ green-up), not a light/dark theme. The neutral shell
+ * never changes. */
+:root[data-color-mode="reversed"] {
+  --up:   var(--hue-green);
+  --down: var(--hue-red);
+}
+
+* { box-sizing: border-box; }
+
+html { scrollbar-gutter: stable; }
+
+h1, h2, h3, h4 { margin: 0; }
 
 body {
-  background: #0d1117;
-  color: #e6edf3;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-han);
+  font-size: 15px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-track { background: #161b22; }
-::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #484f58; }
+::selection { background: var(--ink); color: var(--ground); }
+
+a { color: inherit; text-decoration: none; }
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 3px;
+}
+
+/* ────────── layout ────────── */
+.col {
+  max-width: var(--col);
+  margin-inline: auto;
+  padding-inline: var(--pad);
+}
+.bar-space { height: var(--bar); }
+/* Reading/entry measure — prose and forms want ~65 characters, not the full
+   browse width. */
+.col-narrow {
+  max-width: 760px;
+  margin-inline: auto;
+  padding-inline: var(--pad);
+}
+
+/* ────────── type roles ──────────
+ * Deliberate gap between display and micro-label: nothing sits in the
+ * comfortable 18–34px band except section heads. */
+.display {
+  font-weight: 300;
+  letter-spacing: -.022em;
+  line-height: 1.12;
+  font-size: clamp(25px, 3.4vw, 38px);
+  text-wrap: balance;
+}
+.sec-title {
+  font-weight: 300;
+  letter-spacing: -.02em;
+  font-size: clamp(18px, 2.1vw, 23px);
+}
+/* micro-label always sits on its OWN line above the value it names, so no
+ * single line ever mixes two text colours */
+.lbl {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: .24em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.mono-sm {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+}
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.up { color: var(--up); }
+.down { color: var(--down); }
+
+/* ────────── rules — the only structural device ────────── */
+.rule { border-top: 1px solid var(--rule); }
+.rule-b { border-bottom: 1px solid var(--rule); }
+.rule-faint { border-top: 1px solid var(--rule-faint); }
+
+/* ────────── controls ────────── */
+.seg {
+  appearance: none; background: none; border: 0; padding: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  transition: color .18s ease;
+}
+.seg:hover { color: var(--ink); }
+.seg[aria-pressed="true"],
+.seg[data-on="true"] { color: var(--ink); }
+
+/* text field = a ruled line, never a boxed container */
+.field {
+  display: flex; align-items: center; gap: 16px;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 13px;
+  transition: border-color .18s ease;
+}
+.field:focus-within { border-bottom-color: var(--ink); }
+.field input,
+.field select,
+.field textarea {
+  flex: 1; min-width: 0;
+  appearance: none; background: none; border: 0; padding: 0;
+  color: var(--ink);
+  font-family: var(--font-han);
+  font-size: 15px;
+  font-weight: 300;
+}
+.field input::placeholder,
+.field textarea::placeholder { color: var(--muted); }
+
+/* ────────── figure tile ────────── */
+.wall {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: clamp(20px, 2.4vw, 32px) clamp(16px, 1.8vw, 24px);
+}
+@media (max-width: 1040px) { .wall { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 760px)  { .wall { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 520px)  { .wall { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.cell { display: block; position: relative; }
+.cell .shot {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  border: 1px solid var(--rule-faint);
+  overflow: hidden;
+  margin: 0;
+  background: var(--ground-lift);
+  transition: border-color .18s ease;
+}
+.cell .shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cell:hover .shot { border-color: var(--rule); }
+.cell .t {
+  font-size: 12.5px; line-height: 1.45; color: var(--ink); margin-top: 10px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* Reserve both lines whether or not the name wraps, so maker and price stay
+     on a common baseline across a row instead of stepping down 18px. */
+  min-height: calc(2 * 1.45em);
+}
+.cell:hover .t { text-decoration: underline; text-underline-offset: 3px; }
+.cell .p {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px; color: var(--ink-2); margin-top: 4px;
+}
+
+/* ────────── data table ────────── */
+.tbl-scroll { overflow-x: auto; }
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+table.data th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 9.5px;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 20px 9px 0;
+  border-bottom: 1px solid var(--rule);
+}
+table.data td {
+  padding: 12px 20px 12px 0;
+  border-bottom: 1px solid var(--rule-faint);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  vertical-align: middle;
+}
+table.data tr:hover td { color: var(--ink); }
+table.data th:last-child,
+table.data td:last-child { padding-right: 0; text-align: right; }
+table.data td.k { color: var(--ink); }
+
+/* ────────── post row (trading board / notes) ────────── */
+.post { padding: 16px 0; border-bottom: 1px solid var(--rule-faint); }
+.post .meta {
+  font-family: var(--font-mono);
+  font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--muted);
+}
+.post .body { font-size: 14px; color: var(--ink); margin-top: 7px; line-height: 1.6; }
+
+/* ────────── curtain menu ────────── */
+.menu {
+  position: fixed; inset: 0; z-index: 40;
+  background: var(--ground);
+  clip-path: inset(0 0 100% 0);
+  pointer-events: none;
+  transition: clip-path 600ms cubic-bezier(.86, 0, .07, 1);
+  will-change: clip-path;
+}
+.menu.is-open { clip-path: inset(0 0 0 0); pointer-events: auto; }
+.menu-item {
+  opacity: 0; transform: translateY(28px);
+  transition: opacity 600ms cubic-bezier(.22, .61, .36, 1),
+              transform 600ms cubic-bezier(.22, .61, .36, 1);
+  transition-delay: calc(120ms + var(--i, 0) * 70ms);
+}
+.menu.is-open .menu-item { opacity: 1; transform: translateY(0); }
+.menu:not(.is-open) .menu-item { transition: none; }
+.menu-link {
+  display: block; padding: 6px 14px; margin-inline: -14px;
+  transition: background-color .18s ease, color .18s ease;
+}
+.menu-link .rowline {
+  display: inline-flex; align-items: baseline; gap: 22px;
+  font-weight: 300;
+  font-size: clamp(21px, 3vw, 36px);
+  letter-spacing: -.02em; line-height: 1.18;
+}
+.menu-link .en {
+  font-family: var(--font-mono); font-weight: 400; font-size: 11px;
+  letter-spacing: .24em; text-transform: uppercase;
+  color: var(--ink-2); min-width: 108px;
+  transition: color .18s ease;
+}
+/* the one loud moment in an otherwise quiet interface */
+.menu-link:hover { background: var(--ink); color: var(--ground); }
+.menu-link:hover .en { color: var(--ground); }
+
+/* ────────── scrollbar ────────── */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--ground); }
+::-webkit-scrollbar-thumb { background: #1c1b19; }
+::-webkit-scrollbar-thumb:hover { background: #2b2a27; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, .menu, .menu-item {
+    transition: none !important;
+    animation: none !important;
+  }
+}

@@ -41,7 +41,7 @@ export default function TradingBoard({ figureId }: { figureId: string }) {
 
   const fetchOrders = () => {
     fetch(`${apiUrl}/figures/${figureId}/board`)
-      .then((r) => r.ok ? r.json() : Promise.reject(r))
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then(setOrders)
       .catch(() => {
         setToast({ type: "error", msg: "載入交易看板失敗" });
@@ -134,43 +134,40 @@ export default function TradingBoard({ figureId }: { figureId: string }) {
     return d.toLocaleDateString("zh-TW");
   };
 
-  const inp = "w-full rounded-lg border border-[#30363d] bg-[#161b22] px-3 py-2 text-sm text-[#c9d1d9] placeholder-[#484f58] focus:border-[#C4A265] focus:outline-none";
-
-  const OrderCard = ({ o }: { o: Order }) => (
-    <div className="rounded-lg border border-[#30363d] bg-[#0d1117] p-3">
-      <div className="flex items-start justify-between gap-2">
+  const OrderRow = ({ o }: { o: Order }) => (
+    <div className="border-b border-[var(--rule-faint)] py-3.5">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-base font-bold text-[#e6edf3]">
-              {formatCurrency(o.price, o.currency)}
-            </span>
-            <span className="rounded-full bg-[#1c2333] px-1.5 py-0.5 text-[10px] text-[#8b949e]">
+          {/* price and condition on one line, but the condition is muted mono
+              so the line still reads as one weight of ink */}
+          <div className="flex items-baseline gap-2.5">
+            <span className="num text-[16px] text-[var(--ink)]">{formatCurrency(o.price, o.currency)}</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
               {CONDITION_LABELS[o.condition] || o.condition}
             </span>
           </div>
-          {o.notes && <p className="mt-1 text-xs text-[#8b949e]">{o.notes}</p>}
-          <div className="mt-1.5 flex items-center gap-2 text-[10px] text-[#484f58]">
-            <span>{o.display_name || o.username}</span>
-            <span>{formatDate(o.created_at)}</span>
+          {o.notes && <p className="mt-1.5 text-[13px] text-[var(--ink-2)]">{o.notes}</p>}
+          <div className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)]">
+            {o.display_name || o.username} · {formatDate(o.created_at)}
           </div>
         </div>
-        <div className="flex shrink-0 flex-col gap-1">
+        <div className="flex shrink-0 flex-col items-end gap-2">
           {contactVisible[o.id] ? (
-            <div className="rounded-lg bg-[#C4A265]/10 px-2 py-1 text-[10px] text-[#C4A265]">
-              {contactVisible[o.id]}
-            </div>
+            <span className="text-[13px] text-[var(--ink)]">{contactVisible[o.id]}</span>
           ) : (
             <button
+              type="button"
               onClick={() => handleShowContact(o.id)}
-              className="rounded-lg border border-[#C4A265]/30 px-2 py-1 text-[10px] text-[#C4A265] transition-colors hover:bg-[#C4A265]/10"
+              className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]"
             >
               我有興趣
             </button>
           )}
           {user && (user.id === o.user_id || user.role === "admin") && (
             <button
+              type="button"
               onClick={() => handleDelete(o.id)}
-              className="rounded-lg px-2 py-1 text-[10px] text-[#f85149] transition-colors hover:bg-[#f85149]/10"
+              className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)] transition-colors hover:text-[var(--hue-red)]"
             >
               刪除
             </button>
@@ -180,102 +177,137 @@ export default function TradingBoard({ figureId }: { figureId: string }) {
     </div>
   );
 
+  const Column = ({ label, list, empty }: { label: string; list: Order[]; empty: string }) => (
+    <div>
+      <div className="flex items-baseline gap-2 border-b border-[var(--rule)] pb-2">
+        <span className="sec-title text-[16px]">{label}</span>
+        <span className="num text-[12px] text-[var(--muted)]">{list.length}</span>
+      </div>
+      {list.length === 0 ? (
+        <p className="py-6 text-[13px] text-[var(--muted)]">{empty}</p>
+      ) : (
+        list.map((o) => <OrderRow key={o.id} o={o} />)
+      )}
+    </div>
+  );
+
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-base font-semibold text-[#c9d1d9]">交易看板</h2>
+      <div className="flex items-baseline justify-between gap-4 pb-5">
+        <h2 className="sec-title">交易看板</h2>
         {user ? (
           <button
+            type="button"
             onClick={() => setShowForm(!showForm)}
-            className="rounded-lg border border-[#30363d] px-3 py-1 text-xs text-[#8b949e] transition-colors hover:border-[#C4A265] hover:text-[#C4A265]"
+            className="mono-sm text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]"
           >
-            {showForm ? "取消" : "+ 發布求購/出售"}
+            {showForm ? "取消" : "發布求購/出售 ↗"}
           </button>
         ) : (
-          <a href="/login" className="rounded-lg border border-[#30363d] px-3 py-1 text-xs text-[#8b949e] transition-colors hover:border-[#C4A265] hover:text-[#C4A265]">
-            登入後發布
+          <a href="/login" className="mono-sm text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]">
+            登入後發布 ↗
           </a>
         )}
       </div>
 
       {toast && (
-        <div className={`mb-3 rounded-lg px-3 py-2 text-xs ${toast.type === "success" ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"}`}>
+        <p
+          className={`pb-4 text-[13px] ${
+            toast.type === "success" ? "text-[var(--hue-green)]" : "text-[var(--hue-red)]"
+          }`}
+        >
           {toast.msg}
-        </div>
+        </p>
       )}
 
       {showForm && (
-        <div className="mb-4 space-y-3 rounded-lg border border-[#30363d] bg-[#0d1117] p-4">
-          <div className="flex gap-1 rounded-lg border border-[#30363d] bg-[#161b22] p-1">
-            <button onClick={() => setOrderType("buy")} className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${orderType === "buy" ? "bg-[#3fb950]/15 text-[#3fb950]" : "text-[#8b949e]"}`}>
+        <div className="mb-8 border-t border-[var(--rule)] pt-6">
+          <div className="flex gap-x-8 border-b border-[var(--rule-faint)] pb-4">
+            <button
+              type="button"
+              onClick={() => setOrderType("buy")}
+              aria-pressed={orderType === "buy"}
+              className="seg"
+              style={orderType === "buy" ? { color: "var(--hue-green)" } : undefined}
+            >
               求購
             </button>
-            <button onClick={() => setOrderType("sell")} className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${orderType === "sell" ? "bg-[#f85149]/15 text-[#f85149]" : "text-[#8b949e]"}`}>
+            <button
+              type="button"
+              onClick={() => setOrderType("sell")}
+              aria-pressed={orderType === "sell"}
+              className="seg"
+              style={orderType === "sell" ? { color: "var(--hue-red)" } : undefined}
+            >
               出售
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+
+          <div className="grid grid-cols-1 gap-7 pt-6 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-[10px] text-[#6e7681]">價格</label>
-              <div className="flex">
-                <input type="number" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="3000" className={inp + " rounded-r-none"} />
-                <button type="button" onClick={() => setCurrency(currency === "TWD" ? "JPY" : currency === "JPY" ? "CNY" : currency === "CNY" ? "USD" : "TWD")} className="shrink-0 rounded-r-lg border border-l-0 border-[#30363d] bg-[#161b22] px-2 text-[10px] font-medium text-[#C4A265]">
+              <label className="lbl">價格</label>
+              <div className="field">
+                <input
+                  type="number"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  placeholder="3000"
+                />
+                <button
+                  type="button"
+                  onClick={() => setCurrency(currency === "TWD" ? "JPY" : currency === "JPY" ? "CNY" : currency === "CNY" ? "USD" : "TWD")}
+                  className="shrink-0 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]"
+                >
                   {currency}
                 </button>
               </div>
             </div>
             <div>
-              <label className="mb-1 block text-[10px] text-[#6e7681]">狀態</label>
-              <select value={condition} onChange={(e) => setCondition(e.target.value)} className={inp}>
-                <option value="sealed">未拆</option>
-                <option value="opened">拆檢</option>
-                <option value="used">拆擺</option>
-                <option value="damaged">瑕疵</option>
-              </select>
+              <label className="lbl">狀態</label>
+              <div className="field">
+                <select value={condition} onChange={(e) => setCondition(e.target.value)}>
+                  <option value="sealed">未拆</option>
+                  <option value="opened">拆檢</option>
+                  <option value="used">拆擺</option>
+                  <option value="damaged">瑕疵</option>
+                </select>
+              </div>
             </div>
           </div>
-          <div>
-            <label className="mb-1 block text-[10px] text-[#6e7681]">聯絡方式 (僅對方點擊「我有興趣」後可見)</label>
-            <input type="text" value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Line ID / FB / Discord..." className={inp} />
+
+          <div className="pt-7">
+            <label className="lbl">聯絡方式（僅對方點「我有興趣」後可見）</label>
+            <div className="field">
+              <input type="text" value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Line ID / FB / Discord…" />
+            </div>
           </div>
-          <div>
-            <label className="mb-1 block text-[10px] text-[#6e7681]">備註 (選填)</label>
-            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="附圖片連結、交易地點等" className={inp} />
+
+          <div className="pt-7">
+            <label className="lbl">備註（選填）</label>
+            <div className="field">
+              <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="附圖片連結、交易地點等" />
+            </div>
           </div>
-          <button onClick={handleSubmit} disabled={submitting || !price || !contact.trim()} className="w-full rounded-lg bg-[#C4A265] py-2 text-sm font-medium text-white transition-colors hover:bg-[#B89255] disabled:opacity-50">
-            {submitting ? "發布中..." : "發布"}
+
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting || !price || !contact.trim()}
+            className="mt-8 w-full bg-[var(--ink)] py-3 text-[14px] font-medium text-[var(--ground)] transition-opacity hover:opacity-80 disabled:opacity-50"
+          >
+            {submitting ? "發布中…" : "發布"}
           </button>
         </div>
       )}
 
       {orders.length === 0 ? (
-        <div className="rounded-lg border border-[#30363d] bg-[#0d1117] p-4 text-center text-xs text-[#6e7681]">
-          還沒有交易單，成為第一個發布的人吧！
-        </div>
+        <p className="rule py-10 text-center text-[14px] text-[var(--ink-2)]">
+          還沒有交易單，成為第一個發布的人吧
+        </p>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-[#3fb950]">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-              求購 ({buyOrders.length})
-            </h3>
-            <div className="space-y-2">
-              {buyOrders.length === 0 ? (
-                <p className="text-xs text-[#484f58]">暫無求購單</p>
-              ) : buyOrders.map((o) => <OrderCard key={o.id} o={o} />)}
-            </div>
-          </div>
-          <div>
-            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-[#f85149]">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
-              出售 ({sellOrders.length})
-            </h3>
-            <div className="space-y-2">
-              {sellOrders.length === 0 ? (
-                <p className="text-xs text-[#484f58]">暫無出售單</p>
-              ) : sellOrders.map((o) => <OrderCard key={o.id} o={o} />)}
-            </div>
-          </div>
+        <div className="grid gap-x-12 gap-y-8 sm:grid-cols-2">
+          <Column label="求購" list={buyOrders} empty="暫無求購單" />
+          <Column label="出售" list={sellOrders} empty="暫無出售單" />
         </div>
       )}
     </div>

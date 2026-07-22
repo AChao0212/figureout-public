@@ -18,14 +18,14 @@ export default function FigureNotes({ figureId }: { figureId: string }) {
   const [content, setContent] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [toast, setToast] = useState<{type: string; msg: string} | null>(null);
+  const [toast, setToast] = useState<{ type: string; msg: string } | null>(null);
   const [reportedIds, setReportedIds] = useState<Set<number>>(new Set());
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   useEffect(() => {
     fetch(`${apiUrl}/figures/${figureId}/notes`)
-      .then(r => r.json())
+      .then((r) => r.json())
       .then(setNotes)
       .catch(() => {});
   }, [figureId, apiUrl]);
@@ -36,7 +36,7 @@ export default function FigureNotes({ figureId }: { figureId: string }) {
     try {
       const res = await fetch(`${apiUrl}/figures/${figureId}/notes`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { "Authorization": `Bearer ${token}` } : {}) },
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ content: content.trim(), link_url: linkUrl.trim() || null }),
       });
       if (res.ok) {
@@ -44,7 +44,6 @@ export default function FigureNotes({ figureId }: { figureId: string }) {
         setContent("");
         setLinkUrl("");
         setShowForm(false);
-        // Refresh notes
         const r = await fetch(`${apiUrl}/figures/${figureId}/notes`);
         if (r.ok) setNotes(await r.json());
       } else {
@@ -68,7 +67,7 @@ export default function FigureNotes({ figureId }: { figureId: string }) {
         return;
       }
       setReportedIds(new Set([...reportedIds, noteId]));
-      setNotes(notes.filter(n => n.id !== noteId));
+      setNotes(notes.filter((n) => n.id !== noteId));
     } catch {
       setToast({ type: "error", msg: "網路錯誤" });
       setTimeout(() => setToast(null), 3000);
@@ -86,83 +85,91 @@ export default function FigureNotes({ figureId }: { figureId: string }) {
     return d.toLocaleDateString("zh-TW");
   };
 
-  const inp = "w-full rounded-lg border border-[#30363d] bg-[#161b22] px-3 py-2 text-sm text-[#c9d1d9] placeholder-[#484f58] focus:border-[#C4A265] focus:outline-none";
-
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-base font-semibold text-[#c9d1d9]">社群筆記</h2>
+      <div className="flex items-baseline justify-between gap-4 pb-5">
+        <h2 className="sec-title">社群筆記</h2>
         <button
+          type="button"
           onClick={() => setShowForm(!showForm)}
-          className="rounded-lg border border-[#30363d] px-3 py-1 text-xs text-[#8b949e] transition-colors hover:border-[#C4A265] hover:text-[#C4A265]"
+          className="mono-sm text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]"
         >
-          {showForm ? "取消" : "+ 新增筆記"}
+          {showForm ? "取消" : "新增筆記 ↗"}
         </button>
       </div>
 
       {toast && (
-        <div className={`mb-3 rounded-lg px-3 py-2 text-xs ${toast.type === "success" ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"}`}>
+        <p
+          className={`pb-4 text-[13px] ${
+            toast.type === "success" ? "text-[var(--hue-green)]" : "text-[var(--hue-red)]"
+          }`}
+        >
           {toast.msg}
-        </div>
+        </p>
       )}
 
       {showForm && (
-        <div className="mb-4 space-y-2 rounded-lg border border-[#30363d] bg-[#0d1117] p-3">
-          <textarea
-            value={content}
-            onChange={e => setContent(e.target.value)}
-            placeholder="分享你的心得、開箱體驗、注意事項..."
-            maxLength={500}
-            rows={2}
-            className={inp}
-          />
-          <input
-            type="url"
-            value={linkUrl}
-            onChange={e => setLinkUrl(e.target.value)}
-            placeholder="相關連結 (選填) https://..."
-            className={inp}
-          />
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-[#484f58]">{content.length}/500</span>
+        <div className="mb-8 border-t border-[var(--rule)] pt-6">
+          <div className="field !items-start">
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="分享你的心得、開箱體驗、注意事項…"
+              maxLength={500}
+              rows={2}
+              className="resize-none"
+            />
+          </div>
+          <div className="field mt-6">
+            <input
+              type="url"
+              value={linkUrl}
+              onChange={(e) => setLinkUrl(e.target.value)}
+              placeholder="相關連結（選填）https://…"
+            />
+          </div>
+          <div className="mt-5 flex items-center justify-between">
+            <span className="num text-[10px] tracking-[0.1em] text-[var(--muted)]">{content.length}/500</span>
             <button
+              type="button"
               onClick={handleSubmit}
               disabled={submitting || !content.trim()}
-              className="rounded-lg bg-[#C4A265] px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#B89255] disabled:opacity-50"
+              className="bg-[var(--ink)] px-6 py-2.5 text-[13px] font-medium text-[var(--ground)] transition-opacity hover:opacity-80 disabled:opacity-50"
             >
-              {submitting ? "送出中..." : "送出"}
+              {submitting ? "送出中…" : "送出"}
             </button>
           </div>
         </div>
       )}
 
       {notes.length === 0 ? (
-        <div className="rounded-lg border border-[#30363d] bg-[#0d1117] p-4 text-center text-xs text-[#6e7681]">
-          還沒有筆記，成為第一個分享的人吧！
-        </div>
+        <p className="rule py-10 text-center text-[14px] text-[var(--ink-2)]">
+          還沒有筆記，成為第一個分享的人吧
+        </p>
       ) : (
-        <div className="space-y-2">
-          {notes.map(note => (
-            <div key={note.id} className="rounded-lg border border-[#30363d] bg-[#0d1117] p-3">
-              <p className="text-sm text-[#c9d1d9]">{note.content}</p>
+        <div className="rule-b">
+          {notes.map((note) => (
+            <div key={note.id} className="border-b border-[var(--rule-faint)] py-4">
+              <p className="text-[14px] leading-relaxed text-[var(--ink)]">{note.content}</p>
               {note.link_url && (
                 <a
                   href={note.link_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="mt-1 inline-block text-xs text-[#C4A265] hover:underline"
+                  className="mt-1.5 inline-block text-[12px] text-[var(--ink-2)] underline-offset-2 transition-colors hover:text-[var(--ink)] hover:underline"
                 >
-                  {note.link_url.length > 50 ? note.link_url.slice(0, 50) + "..." : note.link_url}
+                  {note.link_url.length > 50 ? note.link_url.slice(0, 50) + "…" : note.link_url}
                 </a>
               )}
-              <div className="mt-1.5 flex items-center justify-between">
-                <span className="text-[10px] text-[#484f58]">{formatDate(note.created_at)}</span>
+              <div className="mt-2 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.12em]">
+                <span className="text-[var(--muted)]">{formatDate(note.created_at)}</span>
                 <button
+                  type="button"
                   onClick={() => handleReport(note.id)}
-                  className={`text-[10px] transition-colors ${
+                  className={`tracking-[0.12em] transition-colors ${
                     reportedIds.has(note.id)
-                      ? "text-[#3fb950]"
-                      : "text-[#484f58] hover:text-[#f85149]"
+                      ? "text-[var(--hue-green)]"
+                      : "text-[var(--muted)] hover:text-[var(--hue-red)]"
                   }`}
                 >
                   {reportedIds.has(note.id) ? "已檢舉" : "檢舉濫用"}

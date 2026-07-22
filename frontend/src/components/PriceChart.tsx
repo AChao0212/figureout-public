@@ -16,38 +16,38 @@ import {
 import { format, parseISO, subDays, subMonths, subYears } from "date-fns";
 import { useExchangeRates } from "./ExchangeRateContext";
 import {
-  convertCurrency,
-  formatCurrency,
-  formatCurrencyTick,
+ convertCurrency,
+ formatCurrency,
+ formatCurrencyTick,
 } from "@/lib/currency";
 
 interface PriceDataPoint {
-  date: string;
-  avg_price: number;
-  median_price: number;
-  min_price: number;
-  max_price: number;
-  sample_count?: number;
+ date: string;
+ avg_price: number;
+ median_price: number;
+ min_price: number;
+ max_price: number;
+ sample_count?: number;
 }
 
 interface Listing {
-  id: number;
-  price: number;
-  price_canonical?: number;
-  currency: string;
-  condition: string;
-  sold_at?: string;
-  source: string;
-  title?: string;
+ id: number;
+ price: number;
+ price_canonical?: number;
+ currency: string;
+ condition: string;
+ sold_at?: string;
+ source: string;
+ title?: string;
 }
 
 interface PriceChartProps {
   /** Daily aggregates from the backend (already in display currency). Drives the trend line. */
-  data: PriceDataPoint[];
-  dataByCondition?: Record<string, PriceDataPoint[]>;
+ data: PriceDataPoint[];
+ dataByCondition?: Record<string, PriceDataPoint[]>;
   /** Individual transactions. Rendered as small scatter dots showing the day's spread. */
-  listings?: Listing[];
-  currency?: string;
+ listings?: Listing[];
+ currency?: string;
 }
 
 type TimeRange = "7d" | "1m" | "3m" | "6m" | "1y" | "all";
@@ -71,39 +71,39 @@ const CONDITION_TABS: { key: ConditionTab; label: string }[] = [
 ];
 
 const CONDITION_LABELS: Record<string, string> = {
-  sealed: "全新", opened: "拆檢", used: "拆擺", damaged: "瑕疵",
+ sealed: "全新", opened: "拆檢", used: "拆擺", damaged: "瑕疵",
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  yahoo_auction: "Yahoo", mercari: "Mercari", mercari_jp: "Mercari",
-  user_report: "社群回報", manual: "手動",
+ yahoo_auction: "Yahoo", mercari: "Mercari", mercari_jp: "Mercari",
+ user_report: "社群回報", manual: "手動",
 };
 
 function getStartDate(range: TimeRange): Date | null {
-  const now = new Date();
-  switch (range) {
-    case "7d": return subDays(now, 7);
-    case "1m": return subMonths(now, 1);
-    case "3m": return subMonths(now, 3);
-    case "6m": return subMonths(now, 6);
-    case "1y": return subYears(now, 1);
-    case "all": return null;
+ const now = new Date();
+ switch (range) {
+ case "7d": return subDays(now, 7);
+ case "1m": return subMonths(now, 1);
+ case "3m": return subMonths(now, 3);
+ case "6m": return subMonths(now, 6);
+ case "1y": return subYears(now, 1);
+ case "all": return null;
   }
 }
 
 interface DailyAggregate {
-  avg: number;
-  median: number;
-  min: number;
-  max: number;
-  count: number;
+ avg: number;
+ median: number;
+ min: number;
+ max: number;
+ count: number;
 }
 
 interface DailyListing {
-  price: number;
-  condition?: string;
-  source?: string;
-  title?: string;
+ price: number;
+ condition?: string;
+ source?: string;
+ title?: string;
 }
 
 /**
@@ -113,83 +113,83 @@ interface DailyListing {
  * A row may have both fields when a single listing is the day's only transaction.
  */
 interface ChartRow {
-  dateLabel: string;
-  sortKey: string;
+ dateLabel: string;
+ sortKey: string;
   /** Daily median, drives the trend line. Only set on a day's primary row + the today-tail row. */
-  trend?: number;
+ trend?: number;
   /** Individual transaction price, drives the scatter. Only set on per-listing rows. */
-  listing_price?: number;
+ listing_price?: number;
   /** Indicates the trailing "today" tail row, so we can hide its dot/tooltip. */
-  isTail?: boolean;
+ isTail?: boolean;
   /** Per-row context for tooltips. */
-  condition?: string;
-  source?: string;
-  title?: string;
-  dailyAgg?: DailyAggregate;
+ condition?: string;
+ source?: string;
+ title?: string;
+ dailyAgg?: DailyAggregate;
   /** All listings on this day — populated on every row so any hover shows full context. */
-  dayListings?: DailyListing[];
+ dayListings?: DailyListing[];
 }
 
 /** Tooltip — same content regardless of whether the user hovers a trend dot or a scatter dot.
  *  Single-listing days show the listing's full details. Multi-listing days show the day's
- *  aggregate stats plus a compact list of every transaction. */
+ * aggregate stats plus a compact list of every transaction. */
 function CustomTooltip({
-  active, payload, currency,
+ active, payload, currency,
 }: {
-  active?: boolean;
-  payload?: Array<{ payload: ChartRow }>;
-  currency: string;
+ active?: boolean;
+ payload?: Array<{ payload: ChartRow }>;
+ currency: string;
 }) {
-  if (!active || !payload || payload.length === 0) return null;
-  const row = payload[0].payload;
-  if (row.isTail) return null; // never show tooltip on the carry-forward tail
+ if (!active || !payload || payload.length === 0) return null;
+ const row = payload[0].payload;
+ if (row.isTail) return null; // never show tooltip on the carry-forward tail
 
-  const agg = row.dailyAgg;
-  const dayListings = row.dayListings ?? [];
-  const isMultiDay = (agg?.count ?? dayListings.length) > 1;
+ const agg = row.dailyAgg;
+ const dayListings = row.dayListings ?? [];
+ const isMultiDay = (agg?.count ?? dayListings.length) > 1;
   // For single-listing days, prefer the listing's own metadata if the row carries it
   // (i.e. user hovered the scatter dot); otherwise pull from dayListings[0].
-  const single = !isMultiDay
+ const single = !isMultiDay
     ? {
-        price: row.listing_price ?? dayListings[0]?.price ?? row.trend,
-        condition: row.condition ?? dayListings[0]?.condition,
-        source: row.source ?? dayListings[0]?.source,
-        title: row.title ?? dayListings[0]?.title,
+ price: row.listing_price ?? dayListings[0]?.price ?? row.trend,
+ condition: row.condition ?? dayListings[0]?.condition,
+ source: row.source ?? dayListings[0]?.source,
+ title: row.title ?? dayListings[0]?.title,
       }
     : null;
 
-  return (
+ return (
     <div style={{
-      backgroundColor: "#161b22", border: "1px solid #30363d",
-      borderRadius: "8px", padding: "8px 12px", fontSize: "12px",
-      maxWidth: 280,
+ backgroundColor: "var(--ground-lift)", border: "1px solid var(--rule)",
+ borderRadius: "8px", padding: "8px 12px", fontSize: "12px",
+ maxWidth: 280,
     }}>
-      <p style={{ color: "#8b949e", margin: "0 0 4px 0", fontSize: "11px" }}>
+      <p style={{ color: "var(--ink-2)", margin: "0 0 4px 0", fontSize: "11px" }}>
         {row.dateLabel}
       </p>
 
       {single && (
         <>
           {single.price != null && (
-            <p style={{ color: "#C4A265", margin: "2px 0", fontWeight: 600, fontSize: "13px" }}>
+            <p style={{ color: "var(--ink)", margin: "2px 0", fontWeight: 600, fontSize: "13px" }}>
               成交：{formatCurrency(single.price, currency)}
             </p>
           )}
           {single.condition && (
-            <p style={{ color: "#c9d1d9", margin: "2px 0", fontSize: "11px" }}>
+            <p style={{ color: "var(--ink)", margin: "2px 0", fontSize: "11px" }}>
               狀態：{single.condition}
             </p>
           )}
           {single.source && (
-            <p style={{ color: "#c9d1d9", margin: "2px 0", fontSize: "11px" }}>
+            <p style={{ color: "var(--ink)", margin: "2px 0", fontSize: "11px" }}>
               來源：{single.source}
             </p>
           )}
           {single.title && (
             <p style={{
-              color: "#8b949e", margin: "4px 0 0 0", fontSize: "10px",
-              maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+ color: "var(--ink-2)", margin: "4px 0 0 0", fontSize: "10px",
+ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis",
+ whiteSpace: "nowrap",
             }}>
               {single.title}
             </p>
@@ -199,35 +199,35 @@ function CustomTooltip({
 
       {isMultiDay && agg && (
         <>
-          <p style={{ color: "#6e7681", margin: "0 0 3px 0", fontSize: "10px" }}>
+          <p style={{ color: "var(--muted)", margin: "0 0 3px 0", fontSize: "10px" }}>
             當日 {agg.count} 筆
           </p>
-          <p style={{ color: "#c9d1d9", margin: "1px 0", fontSize: "11px" }}>
+          <p style={{ color: "var(--ink)", margin: "1px 0", fontSize: "11px" }}>
             中位數 {formatCurrency(agg.median, currency)}
           </p>
-          <p style={{ color: "#C4A265", margin: "1px 0", fontSize: "11px" }}>
+          <p style={{ color: "var(--ink)", margin: "1px 0", fontSize: "11px" }}>
             平均 {formatCurrency(agg.avg, currency)}
           </p>
-          <p style={{ color: "#3fb950", margin: "1px 0", fontSize: "11px" }}>
+          <p style={{ color: "var(--hue-green)", margin: "1px 0", fontSize: "11px" }}>
             最高 {formatCurrency(agg.max, currency)}
           </p>
-          <p style={{ color: "#f85149", margin: "1px 0", fontSize: "11px" }}>
+          <p style={{ color: "var(--hue-red)", margin: "1px 0", fontSize: "11px" }}>
             最低 {formatCurrency(agg.min, currency)}
           </p>
           {dayListings.length > 0 && (
-            <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid #21262d" }}>
-              <p style={{ color: "#6e7681", margin: "0 0 3px 0", fontSize: "10px" }}>
+            <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid var(--ground-lift)" }}>
+              <p style={{ color: "var(--muted)", margin: "0 0 3px 0", fontSize: "10px" }}>
                 成交紀錄
               </p>
               {dayListings.slice(0, 6).map((l, i) => (
-                <p key={i} style={{ color: "#c9d1d9", margin: "1px 0", fontSize: "10px" }}>
+                <p key={i} style={{ color: "var(--ink)", margin: "1px 0", fontSize: "10px" }}>
                   {formatCurrency(l.price, currency)}
                   {l.condition ? ` · ${l.condition}` : ""}
                   {l.source ? ` · ${l.source}` : ""}
                 </p>
               ))}
               {dayListings.length > 6 && (
-                <p style={{ color: "#484f58", margin: "1px 0", fontSize: "10px" }}>
+                <p style={{ color: "var(--muted)", margin: "1px 0", fontSize: "10px" }}>
                   …等 {dayListings.length} 筆
                 </p>
               )}
@@ -240,39 +240,39 @@ function CustomTooltip({
 }
 
 export default function PriceChart({ data, dataByCondition, listings, currency = "TWD" }: PriceChartProps) {
-  const [range, setRange] = useState<TimeRange>("all");
-  const [condTab, setCondTab] = useState<ConditionTab>("all");
-  const liveRates = useExchangeRates() as unknown as Record<string, number>;
+ const [range, setRange] = useState<TimeRange>("all");
+ const [condTab, setCondTab] = useState<ConditionTab>("all");
+ const liveRates = useExchangeRates() as unknown as Record<string, number>;
 
-  const availableConditions = useMemo(() => {
-    if (!dataByCondition) return ["all"];
-    return CONDITION_TABS.map(t => t.key).filter(k => {
-      const d = k === "all" ? data : dataByCondition[k];
-      return d && d.length > 0;
+ const availableConditions = useMemo(() => {
+ if (!dataByCondition) return ["all"];
+ return CONDITION_TABS.map(t => t.key).filter(k => {
+ const d = k === "all" ? data : dataByCondition[k];
+ return d && d.length > 0;
     });
   }, [data, dataByCondition]);
 
-  const condData = useMemo(() => {
-    if (condTab === "all") return data;
-    return dataByCondition?.[condTab] ?? [];
+ const condData = useMemo(() => {
+ if (condTab === "all") return data;
+ return dataByCondition?.[condTab] ?? [];
   }, [condTab, data, dataByCondition]);
 
   // Filter aggregates and listings to the active time range in one place.
-  const start = getStartDate(range);
+ const start = getStartDate(range);
 
   // Daily aggregates that fall inside the time range, sorted ascending.
-  const filteredAggregates = useMemo(() => {
-    return (condData ?? [])
+ const filteredAggregates = useMemo(() => {
+ return (condData ?? [])
       .filter(d => !start || parseISO(d.date) >= start)
       .map(d => ({
-        dateLabel: format(parseISO(d.date), "yyyy/MM/dd"),
-        sortKey: d.date,
-        agg: {
-          avg: d.avg_price,
-          median: d.median_price,
-          min: d.min_price,
-          max: d.max_price,
-          count: d.sample_count ?? 1,
+ dateLabel: format(parseISO(d.date), "yyyy/MM/dd"),
+ sortKey: d.date,
+ agg: {
+ avg: d.avg_price,
+ median: d.median_price,
+ min: d.min_price,
+ max: d.max_price,
+ count: d.sample_count ?? 1,
         } as DailyAggregate,
       }))
       .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
@@ -280,99 +280,99 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
 
   // Group listings by date so per-day scatter rows can pull the right day's aggregate
   // for tooltips without re-fetching it.
-  const listingsByDate = useMemo(() => {
-    const map = new Map<string, DailyListing[]>();
-    if (!listings) return map;
-    for (const l of listings) {
-      if (condTab !== "all" && l.condition !== condTab) continue;
-      const d = l.sold_at ? new Date(l.sold_at) : null;
-      if (!d) continue;
-      if (start && d < start) continue;
-      const dateLabel = format(d, "yyyy/MM/dd");
-      const arr = map.get(dateLabel) ?? [];
-      arr.push({
-        price: convertCurrency(l.price, l.currency, currency, liveRates),
-        condition: CONDITION_LABELS[l.condition] || l.condition,
-        source: SOURCE_LABELS[l.source] || l.source,
-        title: l.title,
+ const listingsByDate = useMemo(() => {
+ const map = new Map<string, DailyListing[]>();
+ if (!listings) return map;
+ for (const l of listings) {
+ if (condTab !== "all" && l.condition !== condTab) continue;
+ const d = l.sold_at ? new Date(l.sold_at) : null;
+ if (!d) continue;
+ if (start && d < start) continue;
+ const dateLabel = format(d, "yyyy/MM/dd");
+ const arr = map.get(dateLabel) ?? [];
+ arr.push({
+ price: convertCurrency(l.price, l.currency, currency, liveRates),
+ condition: CONDITION_LABELS[l.condition] || l.condition,
+ source: SOURCE_LABELS[l.source] || l.source,
+ title: l.title,
       });
-      map.set(dateLabel, arr);
+ map.set(dateLabel, arr);
     }
-    return map;
+ return map;
   }, [listings, condTab, start, currency, liveRates]);
 
   // Unified data array with two series interleaved:
   //  - One row per day with `trend` set (drives the line + area).
   //  - One row per listing with `listing_price` set (drives the scatter).
   //  - A trailing "today" row carries the last median forward as a flat tail (no dot).
-  const chartRows = useMemo<ChartRow[]>(() => {
-    const rows: ChartRow[] = [];
-    const aggByDate = new Map(filteredAggregates.map(a => [a.dateLabel, a.agg]));
+ const chartRows = useMemo<ChartRow[]>(() => {
+ const rows: ChartRow[] = [];
+ const aggByDate = new Map(filteredAggregates.map(a => [a.dateLabel, a.agg]));
 
-    for (const a of filteredAggregates) {
-      rows.push({
-        dateLabel: a.dateLabel,
-        sortKey: a.sortKey,
-        trend: a.agg.median,
-        dailyAgg: a.agg,
-        dayListings: listingsByDate.get(a.dateLabel) ?? [],
+ for (const a of filteredAggregates) {
+ rows.push({
+ dateLabel: a.dateLabel,
+ sortKey: a.sortKey,
+ trend: a.agg.median,
+ dailyAgg: a.agg,
+ dayListings: listingsByDate.get(a.dateLabel) ?? [],
       });
     }
 
-    for (const [dateLabel, dayListings] of listingsByDate.entries()) {
-      const agg = aggByDate.get(dateLabel);
-      const sortKey = filteredAggregates.find(a => a.dateLabel === dateLabel)?.sortKey ?? dateLabel;
-      for (const l of dayListings) {
-        rows.push({
-          dateLabel,
-          sortKey: sortKey + "_dot",
-          listing_price: l.price,
-          condition: l.condition,
-          source: l.source,
-          title: l.title,
-          dailyAgg: agg,
-          dayListings,
+ for (const [dateLabel, dayListings] of listingsByDate.entries()) {
+ const agg = aggByDate.get(dateLabel);
+ const sortKey = filteredAggregates.find(a => a.dateLabel === dateLabel)?.sortKey ?? dateLabel;
+ for (const l of dayListings) {
+ rows.push({
+ dateLabel,
+ sortKey: sortKey + "_dot",
+ listing_price: l.price,
+ condition: l.condition,
+ source: l.source,
+ title: l.title,
+ dailyAgg: agg,
+ dayListings,
         });
       }
     }
 
-    rows.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+ rows.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
 
     // Carry the last median forward to today so the trend line reaches the right edge.
     // The tail row holds no scatter and is invisible (no dot, no tooltip), so it doesn't
     // imply that a transaction happened today.
-    if (filteredAggregates.length > 0) {
-      const lastAgg = filteredAggregates[filteredAggregates.length - 1];
-      const todayLabel = format(new Date(), "yyyy/MM/dd");
-      if (lastAgg.dateLabel < todayLabel) {
-        rows.push({
-          dateLabel: todayLabel,
-          sortKey: new Date().toISOString(),
-          trend: lastAgg.agg.median,
-          isTail: true,
+ if (filteredAggregates.length > 0) {
+ const lastAgg = filteredAggregates[filteredAggregates.length - 1];
+ const todayLabel = format(new Date(), "yyyy/MM/dd");
+ if (lastAgg.dateLabel < todayLabel) {
+ rows.push({
+ dateLabel: todayLabel,
+ sortKey: new Date().toISOString(),
+ trend: lastAgg.agg.median,
+ isTail: true,
         });
       }
     }
 
-    return rows;
+ return rows;
   }, [filteredAggregates, listingsByDate]);
 
   // X-axis ticks: each unique date once, in chronological order.
-  const uniqueDates = useMemo(() => {
-    const seen = new Set<string>();
-    const result: string[] = [];
-    for (const r of chartRows) {
-      if (!seen.has(r.dateLabel)) {
-        seen.add(r.dateLabel);
-        result.push(r.dateLabel);
+ const uniqueDates = useMemo(() => {
+ const seen = new Set<string>();
+ const result: string[] = [];
+ for (const r of chartRows) {
+ if (!seen.has(r.dateLabel)) {
+ seen.add(r.dateLabel);
+ result.push(r.dateLabel);
       }
     }
-    return result;
+ return result;
   }, [chartRows]);
 
-  if (!data || data.length === 0) {
-    return (
-      <div className="flex h-48 items-center justify-center text-sm text-[#6e7681]">
+ if (!data || data.length === 0) {
+ return (
+      <div className="flex h-48 items-center justify-center text-sm text-[var(--muted)]">
         尚無價格走勢資料
       </div>
     );
@@ -380,37 +380,37 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
 
   // Y-axis domain spans every value the user can see — trend line, scatter dots,
   // and the tooltip's max/min — so nothing falls outside the visible area.
-  const allValues = chartRows.flatMap(r => {
-    const vs: number[] = [];
-    if (r.trend != null) vs.push(r.trend);
-    if (r.listing_price != null) vs.push(r.listing_price);
-    if (r.dailyAgg) vs.push(r.dailyAgg.min, r.dailyAgg.max);
-    return vs;
+ const allValues = chartRows.flatMap(r => {
+ const vs: number[] = [];
+ if (r.trend != null) vs.push(r.trend);
+ if (r.listing_price != null) vs.push(r.listing_price);
+ if (r.dailyAgg) vs.push(r.dailyAgg.min, r.dailyAgg.max);
+ return vs;
   });
-  const minVal = allValues.length ? Math.min(...allValues) : 0;
-  const maxVal = allValues.length ? Math.max(...allValues) : 0;
-  const padding = (maxVal - minVal) * 0.1 || maxVal * 0.1 || 10;
-  const yDomain = [Math.max(0, Math.floor(minVal - padding)), Math.ceil(maxVal + padding)];
+ const minVal = allValues.length ? Math.min(...allValues) : 0;
+ const maxVal = allValues.length ? Math.max(...allValues) : 0;
+ const padding = (maxVal - minVal) * 0.1 || maxVal * 0.1 || 10;
+ const yDomain = [Math.max(0, Math.floor(minVal - padding)), Math.ceil(maxVal + padding)];
 
   // Find the dateLabel of the last actual data point — used to draw a subtle vertical
   // marker separating real history from the "today" tail.
-  const lastActualLabel = filteredAggregates.length > 0
+ const lastActualLabel = filteredAggregates.length > 0
     ? filteredAggregates[filteredAggregates.length - 1].dateLabel
     : null;
 
-  return (
+ return (
     <div>
       {/* Condition tabs */}
       {availableConditions.length > 1 && (
         <div className="mb-2 flex items-center gap-1">
           {CONDITION_TABS.filter(t => availableConditions.includes(t.key)).map((t) => (
             <button
-              key={t.key}
-              onClick={() => setCondTab(t.key)}
-              className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                condTab === t.key
-                  ? "border-[#C4A265] bg-[#C4A265]/20 text-[#C4A265]"
-                  : "border-[#30363d] text-[#6e7681] hover:text-[#8b949e] hover:border-[#484f58]"
+ key={t.key}
+ onClick={() => setCondTab(t.key)}
+ className={` border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+ condTab === t.key
+                  ? "border-[var(--ink)] bg-[var(--ink)]/20 text-[var(--ink)]"
+                  : "border-[var(--rule)] text-[var(--muted)] hover:text-[var(--ink-2)] hover:border-[var(--muted)]"
               }`}
             >
               {t.label}
@@ -423,12 +423,12 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
       <div className="mb-3 flex items-center gap-1">
         {TIME_RANGES.map((tr) => (
           <button
-            key={tr.key}
-            onClick={() => setRange(tr.key)}
-            className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
-              range === tr.key
-                ? "bg-[#C4A265]/20 text-[#C4A265]"
-                : "text-[#6e7681] hover:text-[#8b949e] hover:bg-[#161b22]"
+ key={tr.key}
+ onClick={() => setRange(tr.key)}
+ className={` px-2.5 py-1 text-[11px] font-medium transition-colors ${
+ range === tr.key
+                ? "bg-[var(--ink)]/20 text-[var(--ink)]"
+                : "text-[var(--muted)] hover:text-[var(--ink-2)] hover:bg-[var(--ground-lift)]"
             }`}
           >
             {tr.label}
@@ -437,7 +437,7 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
       </div>
 
       {chartRows.length === 0 ? (
-        <div className="flex h-48 items-center justify-center text-sm text-[#6e7681]">
+        <div className="flex h-48 items-center justify-center text-sm text-[var(--muted)]">
           此狀態尚無價格資料
         </div>
       ) : (
@@ -446,74 +446,74 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
             <ComposedChart data={chartRows} margin={{ top: 5, right: 10, left: 15, bottom: 0 }}>
               <defs>
                 <linearGradient id="priceTrendFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#C4A265" stopOpacity={0.25} />
-                  <stop offset="100%" stopColor="#C4A265" stopOpacity={0} />
+                  <stop offset="0%" stopColor="var(--ink)" stopOpacity={0.25} />
+                  <stop offset="100%" stopColor="var(--ink)" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#21262d" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--ground-lift)" />
               <XAxis
-                dataKey="dateLabel"
-                stroke="#30363d"
-                tick={{ fill: "#8b949e", fontSize: 11 }}
-                type="category"
-                allowDuplicatedCategory={false}
-                ticks={uniqueDates}
-                interval="preserveStartEnd"
-                minTickGap={30}
+ dataKey="dateLabel"
+ stroke="var(--rule)"
+ tick={{ fill: "var(--ink-2)", fontSize: 11 }}
+ type="category"
+ allowDuplicatedCategory={false}
+ ticks={uniqueDates}
+ interval="preserveStartEnd"
+ minTickGap={30}
               />
               <YAxis
-                stroke="#30363d"
-                tick={{ fill: "#8b949e", fontSize: 10 }}
-                width={60}
-                domain={yDomain}
-                tickFormatter={(v: number) => formatCurrencyTick(v, currency)}
+ stroke="var(--rule)"
+ tick={{ fill: "var(--ink-2)", fontSize: 10 }}
+ width={60}
+ domain={yDomain}
+ tickFormatter={(v: number) => formatCurrencyTick(v, currency)}
               />
-              <Tooltip content={<CustomTooltip currency={currency} />} cursor={{ stroke: "#30363d", strokeDasharray: "3 3" }} />
+              <Tooltip content={<CustomTooltip currency={currency} />} cursor={{ stroke: "var(--rule)", strokeDasharray: "3 3" }} />
 
               {/* Soft gradient fill under the trend line. Connects across days so the area
-                  spans the full range, including the carry-forward tail. */}
+ spans the full range, including the carry-forward tail. */}
               <Area
-                type="monotone"
-                dataKey="trend"
-                stroke="none"
-                fill="url(#priceTrendFill)"
-                connectNulls
-                isAnimationActive={false}
+ type="monotone"
+ dataKey="trend"
+ stroke="none"
+ fill="url(#priceTrendFill)"
+ connectNulls
+ isAnimationActive={false}
               />
 
               {/* Trend line through daily medians. Connects across listing-only rows
                   (which have null `trend`) and reaches today via the tail row. */}
               <Line
-                type="monotone"
-                dataKey="trend"
-                stroke="#C4A265"
-                strokeWidth={2}
-                dot={(props) => {
-                  const { payload, cx, cy } = props as unknown as { payload: ChartRow; cx: number; cy: number };
-                  if (payload.isTail || payload.trend == null) {
+ type="monotone"
+ dataKey="trend"
+ stroke="var(--ink)"
+ strokeWidth={2}
+ dot={(props) => {
+ const { payload, cx, cy } = props as unknown as { payload: ChartRow; cx: number; cy: number };
+ if (payload.isTail || payload.trend == null) {
                     // Recharts requires an SVG element; render an invisible marker.
-                    return <circle key={`d-${payload.sortKey}`} cx={cx} cy={cy} r={0} fill="transparent" />;
+ return <circle key={`d-${payload.sortKey}`} cx={cx} cy={cy} r={0} fill="transparent" />;
                   }
-                  return <circle key={`d-${payload.sortKey}`} cx={cx} cy={cy} r={3.5} fill="#C4A265" stroke="#0d1117" strokeWidth={1.5} />;
+ return <circle key={`d-${payload.sortKey}`} cx={cx} cy={cy} r={3.5} fill="var(--ink)" stroke="var(--ground)" strokeWidth={1.5} />;
                 }}
-                activeDot={{ r: 5, fill: "#C4A265", stroke: "#0d1117", strokeWidth: 2 }}
-                connectNulls
-                isAnimationActive={false}
+ activeDot={{ r: 5, fill: "var(--ink)", stroke: "var(--ground)", strokeWidth: 2 }}
+ connectNulls
+ isAnimationActive={false}
               />
 
               {/* Individual transaction dots — small and translucent so they
-                  enrich the picture without competing with the trend line. */}
+ enrich the picture without competing with the trend line. */}
               <Scatter
-                dataKey="listing_price"
-                fill="#C4A265"
-                fillOpacity={0.45}
-                shape="circle"
-                isAnimationActive={false}
+ dataKey="listing_price"
+ fill="var(--ink)"
+ fillOpacity={0.45}
+ shape="circle"
+ isAnimationActive={false}
               />
 
               {/* Subtle marker at the boundary between actual data and the today-tail. */}
               {lastActualLabel && lastActualLabel !== uniqueDates[uniqueDates.length - 1] && (
-                <ReferenceLine x={lastActualLabel} stroke="#30363d" strokeDasharray="3 3" />
+                <ReferenceLine x={lastActualLabel} stroke="var(--rule)" strokeDasharray="3 3" />
               )}
             </ComposedChart>
           </ResponsiveContainer>
@@ -523,14 +523,14 @@ export default function PriceChart({ data, dataByCondition, listings, currency =
       {/* Legend */}
       <div className="mt-2 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[10px]">
         <span className="flex items-center gap-1">
-          <span className="inline-block h-0.5 w-4 bg-[#C4A265]" />
-          <span className="text-[#8b949e]">趨勢（每日中位數）</span>
+          <span className="inline-block h-0.5 w-4 bg-[var(--ink)]" />
+          <span className="text-[var(--ink-2)]">趨勢（每日中位數）</span>
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#C4A265]/60" />
-          <span className="text-[#8b949e]">個別成交</span>
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--ink)]/60" />
+          <span className="text-[var(--ink-2)]">個別成交</span>
         </span>
-        <span className="text-[#484f58]">滑鼠移上去看更多</span>
+        <span className="text-[var(--muted)]">滑鼠移上去看更多</span>
       </div>
     </div>
   );

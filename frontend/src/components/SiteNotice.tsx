@@ -23,21 +23,25 @@ export default function SiteNotice() {
   if (dismissed) return null;
 
   return (
-    <div className="border-b border-[#C4A265]/30 bg-[#C4A265]/10 text-[#C4A265]">
-      <div className="mx-auto flex max-w-7xl items-start justify-between gap-3 px-4 py-2 text-xs sm:px-6 lg:px-8">
-        <p className="leading-snug">
-          <span className="mr-1">🖼️</span>
-          部分公仔圖片暫時無法顯示 — 圖片來源站 (<span className="font-mono">hpoi.net</span>) CDN 異常，非本站故障。價格與交易資料正常。
+    <div className="border-b border-[var(--rule)]">
+      <div className="col flex items-start justify-between gap-4 py-2.5">
+        <p className="text-[13px] leading-snug text-[var(--ink-2)]">
+          部分公仔圖片暫時無法顯示 — 圖片來源站（
+          <span className="font-mono">hpoi.net</span>
+          ）CDN 異常，非本站故障。價格與交易資料正常。
         </p>
         <button
+          type="button"
           onClick={() => {
-            try { localStorage.setItem(DISMISS_KEY, "1"); } catch {}
+            try {
+              localStorage.setItem(DISMISS_KEY, "1");
+            } catch {}
             setDismissed(true);
           }}
-          className="shrink-0 text-[11px] text-[#C4A265]/80 hover:text-[#C4A265]"
+          className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--muted)] transition-colors hover:text-[var(--ink)]"
           aria-label="關閉通知"
         >
-          關閉 ✕
+          關閉
         </button>
       </div>
     </div>

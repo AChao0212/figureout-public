@@ -15,7 +15,7 @@ interface Figure {
 
 export default function SearchResultsGrid({ figures, currency }: { figures: Figure[]; currency: string }) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+    <div className="wall">
       {figures.map((fig) => (
         <FigureCard
           key={fig.id}

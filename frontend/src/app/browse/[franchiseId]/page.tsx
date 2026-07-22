@@ -49,30 +49,34 @@ export default async function FranchiseCharactersPage({
   });
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-      <div className="mb-2">
-        <Link href="/browse" className="text-xs text-[#6e7681] transition-colors hover:text-[#C4A265]">
-          &larr; 返回作品列表
-        </Link>
+    <div className="col pb-10 pt-[clamp(24px,4.5vh,46px)]">
+      <Link
+        href="/browse"
+        className="mono-sm text-[var(--muted)] transition-colors hover:text-[var(--ink)]"
+      >
+        ← 返回作品列表
+      </Link>
+
+      <div className="pb-[clamp(18px,3vh,28px)] pt-4">
+        <h1 className="display">{franchise?.name_zh || franchise?.name || "作品"}</h1>
+        {franchise?.name_zh && (
+          <p className="mt-3 font-mono text-[11px] tracking-[0.1em] text-[var(--ink-2)]">
+            {franchise.name}
+          </p>
+        )}
       </div>
-      <h1 className="mb-1 text-xl font-bold text-[#e6edf3] sm:text-2xl">
-        {franchise?.name_zh || franchise?.name || "作品"}
-      </h1>
-      {franchise?.name_zh && (
-        <p className="mb-6 text-sm text-[#6e7681]">{franchise.name}</p>
-      )}
 
       {characters.length === 0 ? (
-        <div className="rounded-lg border border-[#30363d] bg-[#0d1117] p-10 text-center">
-          <p className="text-sm text-[#6e7681]">此作品尚無角色資料</p>
-        </div>
+        <p className="rule py-12 text-center text-[14px] text-[var(--ink-2)]">
+          此作品尚無角色資料
+        </p>
       ) : (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4 lg:grid-cols-5">
+        <div className="rule grid grid-cols-2 gap-x-8 sm:grid-cols-3 lg:grid-cols-4">
           {characters.flatMap((character) => {
             // Lock to exact character + franchise so results don't include unrelated
             // figures whose names happen to contain the character string. If the
             // DB row holds a 「、」-merged multi-character name (1053 such rows
-            // exist), render one card per part so each links to a clean single-
+            // exist), render one entry per part so each links to a clean single-
             // character search instead of the whole literal string.
             const franchiseParam = franchiseName ? `&franchise=${encodeURIComponent(franchiseName)}` : "";
             const primary = character.name_zh || character.name;
@@ -83,13 +87,17 @@ export default async function FranchiseCharactersPage({
               <Link
                 key={`${character.id}-${i}`}
                 href={`/search?character=${encodeURIComponent(part)}${franchiseParam}`}
-                className="rounded-lg border border-[#30363d] bg-[#161b22] p-3 transition-all hover:border-[#484f58] sm:p-4"
+                className="group border-b border-[var(--rule-faint)] py-3.5"
               >
-                <p className="text-sm font-medium text-[#c9d1d9]">{part}</p>
-                {/* English/jp secondary line only shown when we didn't split — for
-                    split rows we can't reliably attribute the romaji to a part. */}
+                <span className="block text-[14px] text-[var(--ink-2)] transition-colors group-hover:text-[var(--ink)]">
+                  {part}
+                </span>
+                {/* Romaji/JP secondary line only when we didn't split — for split
+                    rows we can't reliably attribute it to a single part. */}
                 {parts.length === 1 && character.name_zh && (
-                  <p className="mt-0.5 text-xs text-[#6e7681]">{character.name}</p>
+                  <span className="mt-1 block font-mono text-[10px] tracking-[0.12em] text-[var(--muted)]">
+                    {character.name}
+                  </span>
                 )}
               </Link>
             ));

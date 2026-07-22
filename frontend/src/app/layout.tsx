@@ -1,22 +1,12 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
-import Link from "next/link";
-import { Suspense } from "react";
-import CurrencySelector from "@/components/CurrencySelector";
-import ColorModeToggle from "@/components/ColorModeToggle";
+import "./globals.css";
+
 import { ColorModeProvider } from "@/components/ColorModeContext";
 import { WatchlistProvider } from "@/components/WatchlistContext";
 import { PurchaseProvider } from "@/components/PurchaseContext";
 import { ExchangeRateProvider } from "@/components/ExchangeRateContext";
 import { AuthProvider } from "@/components/AuthContext";
-import UserMenu from "@/components/UserMenu";
-import MobileNav from "@/components/MobileNav";
-import "./globals.css";
-
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-});
+import SiteChrome from "@/components/SiteChrome";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://figureout.tw"),
@@ -41,62 +31,40 @@ export const metadata: Metadata = {
     description:
       "PVC 公仔二級市場價格透明化平台 — 整合真實成交數據，掌握市場行情。",
   },
-  robots: {
-    index: true,
-    follow: true,
-  },
-  icons: {
-    icon: "/favicon.svg",
-  },
+  robots: { index: true, follow: true },
+  icons: { icon: "/favicon.svg" },
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="zh-TW" className={`${inter.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col overflow-x-hidden bg-[#0d1117] text-[#e6edf3]">
+    <html lang="zh-TW" className="h-full">
+      <body className="flex min-h-full flex-col overflow-x-hidden">
         <ColorModeProvider>
-        <AuthProvider>
-        <ExchangeRateProvider><WatchlistProvider><PurchaseProvider>
-        <header className="sticky top-0 z-50 border-b border-[#30363d] bg-[#0d1117]/95 backdrop-blur-sm">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="flex h-14 items-center justify-between">
-              <Link href="/" className="flex items-center gap-2">
-                <span className="text-xl font-bold text-[#C4A265]">
-                  FigureOut
-                </span>
-              </Link>
+          <AuthProvider>
+            <ExchangeRateProvider>
+              <WatchlistProvider>
+                <PurchaseProvider>
+                  <SiteChrome />
 
-              {/* Desktop nav */}
-              <nav className="hidden items-center gap-4 text-sm text-[#8b949e] sm:flex">
-                <Link href="/" className="transition-colors hover:text-[#e6edf3]">首頁</Link>
-                <Link href="/browse" className="transition-colors hover:text-[#e6edf3]">瀏覽</Link>
-                <Link href="/trending" className="transition-colors hover:text-[#e6edf3]">排行榜</Link>
-                <Link href="/watchlist" className="transition-colors hover:text-[#e6edf3]">收藏</Link>
-                <Link href="/submit" className="transition-colors hover:text-[#e6edf3]">提交公仔</Link>
-                <UserMenu />
-              </nav>
+                  {/* The bar is fixed, so everything in normal flow starts
+                      below it — the notice included, or it would sit under
+                      the bar and be unreadable. */}
+                  {/* Remount <SiteNotice /> above <main> to run a site-wide
+                      banner; the hpoi CDN outage it was written for is over. */}
+                  <div className="flex flex-1 flex-col pt-[var(--bar)]">
+                    <main className="flex-1">{children}</main>
+                  </div>
 
-              {/* Mobile nav */}
-              <div className="sm:hidden">
-                <MobileNav />
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <main className="relative z-10 flex-1">{children}</main>
-
-        <footer className="relative z-10 border-t border-[#30363d] py-6">
-          <div className="mx-auto max-w-7xl px-4 text-center text-xs text-[#8b949e]">
-            FigureOut — PVC 公仔二級市場行情平台
-          </div>
-        </footer>
-        </PurchaseProvider></WatchlistProvider></ExchangeRateProvider>
-        </AuthProvider>
+                  <footer className="col rule mt-[clamp(46px,8vh,92px)] flex flex-wrap justify-between gap-4 pb-14 pt-5 font-mono text-[9.5px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                    <span>FigureOut · PVC 公仔二級市場報價工具</span>
+                    <a href="/privacy" className="transition-colors hover:text-[var(--ink)]">隱私權政策</a>
+                  </footer>
+                </PurchaseProvider>
+              </WatchlistProvider>
+            </ExchangeRateProvider>
+          </AuthProvider>
         </ColorModeProvider>
       </body>
     </html>

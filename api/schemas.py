@@ -129,6 +129,31 @@ class FigureOut(BaseModel):
     price_trend_pct: float | None = None  # % change recent price trend (EMA-based)
 
 
+class FigureCardOut(BaseModel):
+    """Only what a grid tile renders.
+
+    FigureOut carries 30 fields (~876 bytes/row); a tile shows eight of them,
+    so list responses were ~64% padding — sculptor, dimensions, age_rating,
+    reissue_dates and the rest, fetched and parsed by every visitor scrolling
+    a results page. Opt in with ?fields=card.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    manufacturer: str | None = None
+    image_url: str | None = None
+    retail_price: int | None = None
+    retail_currency: str | None = "JPY"
+    current_median_price: float | None = None
+    price_change_pct: float | None = None
+
+
+class SearchResultCard(BaseModel):
+    figures: list[FigureCardOut]
+    total: int
+
+
 class FigureRelated(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

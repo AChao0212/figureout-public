@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import NotificationBell from "./NotificationBell";
 import UserMenu from "./UserMenu";
 
 /**
@@ -154,7 +153,11 @@ export default function SiteChrome() {
               )}
             </div>
 
-            <NotificationBell />
+            {/* No notification bell: routers/notifications.py and the
+                transactions.py code that would create the rows are both
+                unregistered in main.py, so the endpoint 404s and the count is
+                always zero. Mount <NotificationBell /> here once that chain is
+                actually wired up. */}
             <UserMenu />
 
             <button
@@ -163,7 +166,7 @@ export default function SiteChrome() {
               className={barBtn}
               aria-expanded={menuOpen}
             >
-              {menuOpen ? "Close" : "Menu"}
+              Menu
             </button>
           </div>
         </div>

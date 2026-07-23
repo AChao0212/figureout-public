@@ -144,9 +144,6 @@ export default function AdminPage() {
 
   // Users tab state
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [newUsername, setNewUsername] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [newRole, setNewRole] = useState("editor");
   const [userMsg, setUserMsg] = useState("");
 
   // Notes state (inline in figure edit)
@@ -303,37 +300,10 @@ export default function AdminPage() {
   // --- Users tab ---
   const fetchUsers = async () => {
     try {
-      const r = await fetch(`${apiUrl}/auth/users`, { headers: authHeaders() });
+      const r = await fetch(`${apiUrl}/user/users`, { headers: authHeaders() });
       if (r.ok) setUsers(await r.json());
       else if (r.status === 401 || r.status === 403) setUserMsg("需要超級管理員權限，請先登入。");
     } catch { setUserMsg("載入失敗"); }
-  };
-  const createUser = async () => {
-    if (!newUsername.trim() || !newPassword.trim()) { setUserMsg("帳號和密碼不可為空"); return; }
-    setUserMsg("");
-    try {
-      const r = await fetch(`${apiUrl}/auth/users`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ username: newUsername, password: newPassword, role: newRole }),
-      });
-      if (r.ok) {
-        setNewUsername(""); setNewPassword(""); setNewRole("editor");
-        setUserMsg("帳號建立成功");
-        fetchUsers();
-      } else {
-        const d = await r.json().catch(() => ({}));
-        setUserMsg(d.detail || "建立失敗");
-      }
-    } catch { setUserMsg("連線失敗"); }
-  };
-  const deleteUser = async (id: number, username: string) => {
-    if (!confirm(`確定刪除帳號「${username}」？`)) return;
-    try {
-      const r = await fetch(`${apiUrl}/auth/users/${id}`, { method: "DELETE", headers: authHeaders() });
-      if (r.ok) { setUsers(u => u.filter(x => x.id !== id)); setUserMsg("已刪除"); }
-      else { const d = await r.json().catch(() => ({})); setUserMsg(d.detail || "刪除失敗"); }
-    } catch { setUserMsg("連線失敗"); }
   };
 
   // --- Settings tab ---
@@ -549,28 +519,9 @@ export default function AdminPage() {
 
       {tab==="users"&&!loading&&(<div className="space-y-4">
         {userMsg && <p className={`text-sm ${userMsg.includes("成功") || userMsg.includes("已刪除") ? "text-green-400" : "text-[var(--hue-red)]"}`}>{userMsg}</p>}
-        {/* Create user form */}
-        <div className={card}>
-          <h3 className="mb-3 text-sm font-medium text-[var(--ink)]">新增帳號</h3>
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className="mb-1 block text-[10px] text-[var(--muted)]">帳號</label>
-              <input type="text" value={newUsername} onChange={e => setNewUsername(e.target.value)} placeholder="username" className={inp + " w-40"} />
-            </div>
-            <div>
-              <label className="mb-1 block text-[10px] text-[var(--muted)]">密碼</label>
-              <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="password" className={inp + " w-40"} />
-            </div>
-            <div>
-              <label className="mb-1 block text-[10px] text-[var(--muted)]">角色</label>
-              <select value={newRole} onChange={e => setNewRole(e.target.value)} className={inp + " w-32"}>
-                <option value="editor">editor</option>
-                <option value="admin">admin</option>
-              </select>
-            </div>
-            <button onClick={createUser} className={btn + " bg-[var(--ink)] text-[var(--ground)] hover:bg-[var(--ink-2)]"}>建立</button>
-        </div>
-        </div>
+        {/* Account creation removed: it POSTed to /auth/users, which exists in
+            no router. Restoring it needs a real endpoint (hashing, role
+            validation, audit) — see notes in the commit. */}
         {/* User list */}
         {users.length > 0 && (
           <div className="overflow-x-auto border border-[var(--rule)]">
@@ -590,17 +541,15 @@ export default function AdminPage() {
                     <td className="px-3 py-2 text-xs text-[var(--muted)]">{u.id}</td>
                     <td className="px-3 py-2 text-[var(--ink)]">{u.username}</td>
                     <td className="px-3 py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
- u.role === "super_admin" ? "bg-[var(--ink)]/20 text-[var(--ink)]" :
- u.role === "admin" ? "bg-blue-900/30 text-blue-400" :
-                        "bg-[var(--ground-lift)] text-[var(--ink-2)]"
+                      <span className={`whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] ${
+                        u.role === "super_admin" || u.role === "admin"
+                          ? "text-[var(--ink)]"
+                          : "text-[var(--ink-2)]"
                       }`}>{u.role}</span>
                     </td>
                     <td className="px-3 py-2 text-[10px] text-[var(--muted)]">{u.created_at ? new Date(u.created_at).toLocaleString("zh-TW") : "-"}</td>
                     <td className="px-3 py-2">
-                      {u.role !== "super_admin" && (
-                        <button onClick={() => deleteUser(u.id, u.username)} className={btn + " bg-red-900/30 text-[var(--hue-red)] hover:bg-red-900/50"}>刪除</button>
-                      )}
+                      <span className="text-[10px] text-[var(--muted)]">—</span>
                     </td>
                   </tr>
                 ))}

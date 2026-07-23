@@ -14,8 +14,8 @@ interface RankingEntry {
 }
 
 const roleBadge: Record<string, { label: string; cls: string }> = {
- admin: { label: "管理員", cls: "bg-[var(--ink)]/20 text-[var(--ink)]" },
- editor: { label: "編輯者", cls: "bg-blue-900/30 text-blue-400" },
+  admin: { label: "管理員", cls: "text-[var(--ink)]" },
+  editor: { label: "編輯者", cls: "text-[var(--ink-2)]" },
 };
 
 export default function RankingsPage() {
@@ -58,7 +58,7 @@ export default function RankingsPage() {
     }
   };
 
- const medalColors = ["text-[var(--ink)]", "text-[var(--ink-2)]", "text-[#a0522d]"];
+ const medalColors = ["text-[var(--ink)]", "text-[var(--ink-2)]", "text-[var(--muted)]"];
 
  return (
     <div className="col pb-10 pt-[clamp(24px,4.5vh,46px)]">
@@ -116,20 +116,20 @@ export default function RankingsPage() {
           )}
         </div>
       ) : (
-        <div className="overflow-x-auto border border-[var(--rule)]">
-          <table className="w-full text-sm">
+        <div className="tbl-scroll">
+          <table className="data">
             <thead>
-              <tr className="border-b border-[var(--rule)] bg-[var(--ground-lift)]">
-                <th className="px-4 py-3 text-left text-xs font-medium text-[var(--ink-2)]">#</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-[var(--ink-2)]">使用者</th>
-                <th className="px-4 py-3 text-right text-xs font-medium text-[var(--ink-2)]">價格回報</th>
-                <th className="hidden px-4 py-3 text-right text-xs font-medium text-[var(--ink-2)] sm:table-cell">筆記</th>
+              <tr>
+                <th>#</th>
+                <th>使用者</th>
+                <th>價格回報</th>
+                <th className="hidden sm:table-cell">筆記</th>
               </tr>
             </thead>
             <tbody>
               {rankings.map((entry, i) => (
-                <tr key={entry.user_id} className={`border-b border-[var(--ground-lift)] transition-colors hover:bg-[var(--ground-lift)] ${user && entry.user_id === user.id ? "bg-[var(--ink)]/5" : ""}`}>
-                  <td className="px-4 py-3">
+                <tr key={entry.user_id}>
+                  <td>
                     {i < 3 ? (
                       <span className={`text-base font-medium ${medalColors[i]}`}>
                         {i === 0 ? "1st" : i === 1 ? "2nd" : "3rd"}
@@ -138,13 +138,13 @@ export default function RankingsPage() {
                       <span className="text-sm text-[var(--muted)]">{i + 1}</span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className={`font-medium ${i < 3 ? "text-[var(--ink)]" : "text-[var(--ink)]"}`}>
+                  <td style={{ whiteSpace: "normal", minWidth: 180 }}>
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span className="font-sans text-[14px] text-[var(--ink)]">
                         {entry.display_name || entry.username}
                       </span>
                       {roleBadge[entry.role] && (
-                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${roleBadge[entry.role].cls}`}>
+                        <span className={`shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] ${roleBadge[entry.role].cls}`}>
                           {roleBadge[entry.role].label}
                         </span>
                       )}
@@ -153,17 +153,11 @@ export default function RankingsPage() {
                       )}
                     </div>
                     {entry.display_name && entry.display_name !== entry.username && (
-                      <span className="text-xs text-[var(--muted)]">@{entry.username}</span>
+                      <span className="mt-0.5 block text-[11px] text-[var(--muted)]">@{entry.username}</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    <span className={`font-medium ${i < 3 ? "text-[var(--ink)]" : "text-[var(--ink)]"}`}>
-                      {entry.report_count}
-                    </span>
-                  </td>
-                  <td className="hidden px-4 py-3 text-right sm:table-cell">
-                    <span className="text-[var(--ink-2)]">{entry.note_count}</span>
-                  </td>
+                  <td className="k">{entry.report_count}</td>
+                  <td className="hidden sm:table-cell">{entry.note_count}</td>
                 </tr>
               ))}
             </tbody>

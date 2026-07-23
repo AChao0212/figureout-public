@@ -142,6 +142,7 @@ class FigureCardOut(BaseModel):
     id: int
     name: str
     manufacturer: str | None = None
+    scale: str | None = None
     image_url: str | None = None
     retail_price: int | None = None
     retail_currency: str | None = "JPY"

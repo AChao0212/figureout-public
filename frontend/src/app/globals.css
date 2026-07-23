@@ -309,7 +309,11 @@ table.data td.k { color: var(--ink); }
 .menu-link .en {
   font-family: var(--font-mono); font-weight: 400; font-size: 11px;
   letter-spacing: .24em; text-transform: uppercase;
-  color: var(--ink-2); min-width: 108px;
+  color: var(--ink-2);
+  /* Wide enough for the longest label (CONTRIBUTORS ~111px) so every row's
+     Chinese starts on the same x. At 108px that one row overflowed the floor
+     and knocked the column out of alignment. */
+  min-width: 128px;
   transition: color .18s ease;
 }
 /* the one loud moment in an otherwise quiet interface */

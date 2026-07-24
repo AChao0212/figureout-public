@@ -52,7 +52,8 @@ interface AdminListing {
   sold_at?: string; scraped_at?: string;
 }
 interface AdminUser {
-  id: number; username: string; role: string; created_at?: string;
+  id: number; username: string; display_name?: string; role: string;
+  is_suspended?: boolean; report_count?: number; created_at?: string;
 }
 
 interface AdminFranchise {
@@ -145,6 +146,9 @@ export default function AdminPage() {
   // Users tab state
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [userMsg, setUserMsg] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState("editor");
 
   // Notes state (inline in figure edit)
   const [adminNotes, setAdminNotes] = useState<any[]>([]);
@@ -302,8 +306,45 @@ export default function AdminPage() {
     try {
       const r = await fetch(`${apiUrl}/user/users`, { headers: authHeaders() });
       if (r.ok) setUsers(await r.json());
-      else if (r.status === 401 || r.status === 403) setUserMsg("需要超級管理員權限，請先登入。");
+      else if (r.status === 401 || r.status === 403) setUserMsg("需要管理員權限，請先登入。");
     } catch { setUserMsg("載入失敗"); }
+  };
+
+  const createUser = async () => {
+    if (!newUsername.trim() || !newPassword.trim()) { setUserMsg("帳號和密碼不可為空"); return; }
+    setUserMsg("");
+    try {
+      const r = await fetch(`${apiUrl}/user/users`, {
+        method: "POST", headers: authHeaders(),
+        body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) { setUsers(u => [...u, d]); setNewUsername(""); setNewPassword(""); setUserMsg("已建立帳號"); }
+      else setUserMsg(d.detail || "建立失敗");
+    } catch { setUserMsg("建立失敗"); }
+  };
+
+  const changeRole = async (id: number, role: string) => {
+    try {
+      const r = await fetch(`${apiUrl}/user/users/${id}/role`, {
+        method: "PATCH", headers: authHeaders(), body: JSON.stringify({ role }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) { setUsers(u => u.map(x => x.id === id ? { ...x, role } : x)); setUserMsg("已更新角色"); }
+      else { setUserMsg(d.detail || "更新失敗"); fetchUsers(); }
+    } catch { setUserMsg("更新失敗"); }
+  };
+
+  const toggleSuspend = async (id: number, suspended: boolean) => {
+    if (suspended && !confirm("停用後該帳號無法登入（可再啟用）。確定？")) return;
+    try {
+      const r = await fetch(`${apiUrl}/user/users/${id}/suspend`, {
+        method: "PATCH", headers: authHeaders(), body: JSON.stringify({ suspended }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) { setUsers(u => u.map(x => x.id === id ? { ...x, is_suspended: suspended } : x)); setUserMsg(suspended ? "已停用" : "已啟用"); }
+      else setUserMsg(d.detail || "操作失敗");
+    } catch { setUserMsg("操作失敗"); }
   };
 
   // --- Settings tab ---
@@ -518,10 +559,32 @@ export default function AdminPage() {
       </div>)}
 
       {tab==="users"&&!loading&&(<div className="space-y-4">
-        {userMsg && <p className={`text-sm ${userMsg.includes("成功") || userMsg.includes("已刪除") ? "text-green-400" : "text-[var(--hue-red)]"}`}>{userMsg}</p>}
-        {/* Account creation removed: it POSTed to /auth/users, which exists in
-            no router. Restoring it needs a real endpoint (hashing, role
-            validation, audit) — see notes in the commit. */}
+        {userMsg && <p className={`text-sm ${userMsg.startsWith("已") ? "text-[var(--hue-green)]" : "text-[var(--hue-red)]"}`}>{userMsg}</p>}
+
+        {/* Create account — admin-only POST /user/users (hashing + role validation server-side) */}
+        <div className={card}>
+          <h3 className="mb-3 text-sm font-medium text-[var(--ink)]">新增帳號</h3>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="block">
+              <span className="mb-1 block text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">帳號</span>
+              <input type="text" value={newUsername} onChange={e => setNewUsername(e.target.value)} placeholder="username" className={inp + " w-40"} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">密碼（至少 10 字元）</span>
+              <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="password" className={inp + " w-44"} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">角色</span>
+              <select value={newRole} onChange={e => setNewRole(e.target.value)} className={inp + " w-32"}>
+                <option value="user">user</option>
+                <option value="editor">editor</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+            <button onClick={createUser} className={btn + " bg-[var(--ink)] text-[var(--ground)] hover:opacity-80"}>建立</button>
+          </div>
+        </div>
+
         {/* User list */}
         {users.length > 0 && (
           <div className="overflow-x-auto border border-[var(--rule)]">
@@ -531,6 +594,7 @@ export default function AdminPage() {
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--ink-2)]">ID</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--ink-2)]">帳號</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--ink-2)]">角色</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-[var(--ink-2)]">狀態</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--ink-2)]">建立時間</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--ink-2)]">操作</th>
                 </tr>
@@ -539,17 +603,32 @@ export default function AdminPage() {
                 {users.map(u => (
                   <tr key={u.id} className="border-b border-[var(--ground-lift)] hover:bg-[var(--ground-lift)]">
                     <td className="px-3 py-2 text-xs text-[var(--muted)]">{u.id}</td>
-                    <td className="px-3 py-2 text-[var(--ink)]">{u.username}</td>
+                    <td className="px-3 py-2 text-[var(--ink)]">
+                      {u.username}
+                      {u.display_name && u.display_name !== u.username && (
+                        <span className="ml-2 text-[10px] text-[var(--muted)]">{u.display_name}</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2">
-                      <span className={`whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] ${
-                        u.role === "super_admin" || u.role === "admin"
-                          ? "text-[var(--ink)]"
-                          : "text-[var(--ink-2)]"
-                      }`}>{u.role}</span>
+                      <select value={u.role} onChange={e => changeRole(u.id, e.target.value)}
+                        className="border border-[var(--rule)] bg-[var(--ground)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--ink)] focus:border-[var(--ink)] focus:outline-none">
+                        <option value="user">user</option>
+                        <option value="editor">editor</option>
+                        <option value="admin">admin</option>
+                      </select>
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className="whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em]"
+                        style={{ color: u.is_suspended ? "var(--hue-red)" : "var(--ink-2)" }}>
+                        {u.is_suspended ? "已停用" : "正常"}
+                      </span>
                     </td>
                     <td className="px-3 py-2 text-[10px] text-[var(--muted)]">{u.created_at ? new Date(u.created_at).toLocaleString("zh-TW") : "-"}</td>
                     <td className="px-3 py-2">
-                      <span className="text-[10px] text-[var(--muted)]">—</span>
+                      <button onClick={() => toggleSuspend(u.id, !u.is_suspended)}
+                        className="whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--ink-2)] transition-colors hover:text-[var(--ink)]">
+                        {u.is_suspended ? "啟用" : "停用"}
+                      </button>
                     </td>
                   </tr>
                 ))}

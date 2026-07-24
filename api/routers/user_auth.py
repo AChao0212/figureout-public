@@ -315,6 +315,82 @@ async def set_user_role(
     return {"id": target.id, "username": target.username, "role": target.role}
 
 
+class AdminCreateUserIn(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+    display_name: str | None = None
+
+
+@router.post("/users")
+async def admin_create_user(
+    body: AdminCreateUserIn,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin creates an account. Same validation as public registration, but the
+    caller (an admin) may set the role — consistent with set_user_role, which
+    already lets an admin assign any of these roles. Admin-only, not a public
+    signup route."""
+    if body.role not in ("user", "editor", "admin"):
+        raise HTTPException(status_code=400, detail="角色無效")
+    if not USERNAME_RE.match(body.username):
+        raise HTTPException(status_code=400, detail="帳號只能使用英文、數字和底線，長度 3-30 字元")
+    if len(body.password) < 10:
+        raise HTTPException(status_code=400, detail="密碼至少 10 個字元")
+
+    existing = await db.execute(
+        select(User).where(func.lower(User.username) == body.username.lower())
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="此帳號已被使用")
+
+    user = User(
+        username=body.username,
+        password_hash=hash_password(body.password),
+        display_name=body.display_name or body.username,
+        role=body.role,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "role": user.role,
+        "is_suspended": user.is_suspended,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "report_count": 0,
+    }
+
+
+@router.patch("/users/{user_id}/suspend")
+async def admin_toggle_suspend(
+    user_id: int,
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Suspend / un-suspend an account. This is the block primitive, not a hard
+    delete: is_suspended already gates login (get_current_user 403s on it), it
+    is reversible, and it keeps the user's price reports — the platform's actual
+    data — instead of cascading them away or failing on the non-nullable
+    orders/notifications foreign keys."""
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="不能停用自己的帳號")
+    suspended = bool(body.get("suspended", True))
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="找不到使用者")
+
+    target.is_suspended = suspended
+    await db.commit()
+    return {"id": target.id, "username": target.username, "is_suspended": target.is_suspended}
+
+
 @router.get("/users")
 async def list_users(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Admin lists all users."""

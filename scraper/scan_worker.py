@@ -15,7 +15,22 @@ from opencc import OpenCC
 DB_URL = os.environ.get('DATABASE_URL_SYNC', 'postgresql://figureout:figureout_dev@db:5432/figureout')
 SCAN_START = int(os.environ.get('SCAN_START', '1'))
 SCAN_END = int(os.environ.get('SCAN_END', '126392'))
-s2t = OpenCC('s2t')
+class _S2TFix:
+    """OpenCC s2t, but keep phonetic 里. OpenCC maps an isolated simplified 里 to
+    裏 (里诺->裏諾, 琴里->琴裏). Simplified source never contains 裏, so every 裏 it
+    emits came from a source 里 -- restore it. Genuine 裏面/裏側 degrade to the
+    accepted variant 里面; a rare true-裏 title (e.g. 監獄學園 裏學生會) is caught in
+    review. original_name is stored raw and never passes through here, so Japanese
+    kanji (including legitimate 裏) is unaffected."""
+
+    def __init__(self):
+        self._c = OpenCC('s2t')
+
+    def convert(self, text):
+        return self._c.convert(text).replace("裏", "里") if text else text
+
+
+s2t = _S2TFix()
 
 MIN_JPY = 3700
 MIN_CNY = 180

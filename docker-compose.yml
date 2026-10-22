@@ -47,8 +47,10 @@ services:
     environment:
       DATABASE_URL: postgresql://figureout:${POSTGRES_PASSWORD:-figureout_dev}@db:5432/figureout
       REDIS_URL: redis://redis:6379/0
-      LLM_API_URL: http://192.168.50.1:1234/v1
-      LLM_MODEL: google/gemma-4-26b-a4b-qat
+      # mlx_lm.server on the Mac Mini. Its default model carries a LoRA adapter for
+      # other work; naming the base weights by path makes it serve them bare.
+      LLM_API_URL: http://192.168.50.1:1235/v1
+      LLM_MODEL: /Users/pinhao/.lmstudio/models/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit
       LLM_TIMEOUT: "180"
     depends_on:
       db:

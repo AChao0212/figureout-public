@@ -5,8 +5,11 @@ is the tie-breaker for borderline cases: when keyword overlap is partial, the
 listing title is short, or the price/scale signals are weak.
 
 Design:
-  - Calls the Mac Mini's local OpenAI-compatible server -- LM Studio as of
-    2026-08-09, Ollama before that (configured via LLM_API_URL / LLM_MODEL).
+  - Calls the Mac Mini's local OpenAI-compatible server (LLM_API_URL / LLM_MODEL):
+    mlx_lm.server as of 2026-10-22, LM Studio from 2026-08-09, Ollama before that.
+    mlx_lm.server's "default_model" has a LoRA adapter for unrelated work attached;
+    requesting the base weights by path makes it reload them without the adapter
+    (~9 s per switch, so the first call after the other client is slower).
   - Caches every (figure_id, listing_title_hash) → verdict in Redis for 30 days so
     we never burn a second LLM call on the same pair.
   - Returns (accept: bool, confidence: float, reason: str). Caller decides the
@@ -29,8 +32,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-LLM_API_URL = os.environ.get("LLM_API_URL", "http://192.168.50.1:1234/v1").rstrip("/")
-LLM_MODEL = os.environ.get("LLM_MODEL", "google/gemma-4-26b-a4b-qat")
+LLM_API_URL = os.environ.get("LLM_API_URL", "http://192.168.50.1:1235/v1").rstrip("/")
+LLM_MODEL = os.environ.get(
+    "LLM_MODEL",
+    "/Users/pinhao/.lmstudio/models/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+)
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "180"))
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 CACHE_TTL_SECONDS = 30 * 24 * 3600
@@ -46,8 +52,9 @@ _model_cache = {"name": None, "ts": 0.0}
 
 def _model_tag(model: str) -> str:
     """Short, filesystem-safe model id. Part of the Redis key so verdicts from one
-    model are never served up as another model's."""
-    return re.sub(r"[^a-zA-Z0-9]+", "-", model)[:24]
+    model are never served up as another model's. Uses the last path component:
+    mlx_lm.server ids are absolute paths that all share the same prefix."""
+    return re.sub(r"[^a-zA-Z0-9]+", "-", model.rstrip("/").rsplit("/", 1)[-1])[:24]
 
 
 def _loaded_models() -> list[str]:

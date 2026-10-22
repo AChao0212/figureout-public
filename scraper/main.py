@@ -747,10 +747,15 @@ def scrape_mercari_prices(self, batch_size: int = 30) -> dict:
                             # different-version cases that regex can't reliably reject.
                             from llm_match import check_match
                             verdict = check_match(fig_dict, r["title"])
-                            if (not verdict.accept or verdict.confidence < 0.7) \
-                                    and verdict.reason != "llm_unavailable":
-                                logger.debug(
-                                    "LLM rejected mercari fig=%d title=%r conf=%.2f reason=%s",
+                            if not verdict.accept or verdict.confidence < 0.7:
+                                # Fail closed, including on `llm_unavailable`: a listing we
+                                # skip comes back on the next run, but a wrong one poisons
+                                # the median for good. (2026-08-08: a few days of fail-open
+                                # let cosplay costumes and mousepads in.)
+                                logger.log(
+                                    logging.WARNING if verdict.reason == "llm_unavailable" else logging.DEBUG,
+                                    "LLM %s mercari fig=%d title=%r conf=%.2f reason=%s",
+                                    "unavailable, skipping" if verdict.reason == "llm_unavailable" else "rejected",
                                     fig.id, r["title"][:60], verdict.confidence, verdict.reason,
                                 )
                                 continue
@@ -1168,18 +1173,17 @@ def scrape_yahoo_prices(self, batch_size: int = 30) -> dict:
                             }
                             verdict = check_match(fig_dict, r["title"])
                             if not verdict.accept or verdict.confidence < 0.7:
-                                # LLM rejected or low confidence — skip silently.
-                                # `llm_unavailable` returns accept=True with conf 0.5, so
-                                # those fall through to here and are also skipped (defensive).
-                                # If we wanted "fail open", flip the condition; for now
-                                # we prefer accuracy over coverage.
-                                if verdict.reason != "llm_unavailable":
-                                    logger.debug(
-                                        "LLM rejected fig=%d title=%r conf=%.2f reason=%s",
-                                        fig.id, r["title"][:60], verdict.confidence, verdict.reason,
-                                    )
-                                    continue
-                                # LLM down — fall through and accept based on regex/signal pass.
+                                # LLM rejected, low confidence, or unreachable — skip.
+                                # `llm_unavailable` is conf 0.5 and lands here too: we
+                                # prefer accuracy over coverage, and the next run re-scrapes
+                                # anything we drop.
+                                logger.log(
+                                    logging.WARNING if verdict.reason == "llm_unavailable" else logging.DEBUG,
+                                    "LLM %s fig=%d title=%r conf=%.2f reason=%s",
+                                    "unavailable, skipping" if verdict.reason == "llm_unavailable" else "rejected",
+                                    fig.id, r["title"][:60], verdict.confidence, verdict.reason,
+                                )
+                                continue
 
                             try:
                                 listing = Listing(

@@ -47,8 +47,9 @@ services:
     environment:
       DATABASE_URL: postgresql://figureout:${POSTGRES_PASSWORD:-figureout_dev}@db:5432/figureout
       REDIS_URL: redis://redis:6379/0
-      LLM_API_URL: http://192.168.50.1:11434/v1
-      LLM_MODEL: gpt-oss:20b
+      LLM_API_URL: http://192.168.50.1:1234/v1
+      LLM_MODEL: google/gemma-4-26b-a4b-qat
+      LLM_TIMEOUT: "180"
     depends_on:
       db:
         condition: service_healthy

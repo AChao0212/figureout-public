@@ -1588,7 +1588,7 @@ def scrape_rakuma_prices(self, batch_size: int = 30) -> dict:
 app.conf.beat_schedule = {
     "enrich-figures-daily": {
         "task": "enrich_figures",
-        "schedule": 86400,  # every 24 hours
+        "schedule": crontab(hour=19, minute=30),  # 03:30 Asia/Taipei
         "kwargs": {"batch_size": 500, "min_price_jpy": 0},
     },
     # Yahoo scraper — LLM-validated matching (see llm_match.py).
@@ -1597,16 +1597,22 @@ app.conf.beat_schedule = {
     # listing vs the old ~0.3%), each figure costs ~20s of real search+LLM work
     # instead of a fast 0-candidate skip. 120 keeps the run ~45 min; STALE_DAYS=21
     # means the top ~2,500 figures by views cycle back for fresh prices ~monthly.
-    "scrape-yahoo-every-24h": {
+    # 2026-08-12: was a bare 86400 interval, which anchors to whenever the
+    # container last started -- it had drifted onto 22:24 Asia/Taipei, i.e. exactly
+    # when the Mac Mini serving llm_match is in use. A 32 GB box cannot serve our
+    # matcher and the owner's own model at once (LM Studio answers 400 "insufficient
+    # system resources"), so these now sit on fixed small-hours slots. UTC, per
+    # app.conf.timezone: 20:00 UTC = 04:00 Asia/Taipei.
+    "scrape-yahoo-daily": {
         "task": "scrape_yahoo_prices",
-        "schedule": 86400,
+        "schedule": crontab(hour=20, minute=0),
         "kwargs": {"batch_size": 120},
     },
     # Mercari scraper — Playwright-driven. Runs every 12h since Mercari has
     # ~3-5× more daily sold listings than Yahoo and is the main data moat.
-    "scrape-mercari-every-12h": {
+    "scrape-mercari-twice-nightly": {
         "task": "scrape_mercari_prices",
-        "schedule": 43200,
+        "schedule": crontab(hour="18,22", minute=0),  # 02:00 + 06:00 Asia/Taipei
         "kwargs": {"batch_size": 30},
     },
     # AmiAmi preowned — DISABLED as an automated source. The reverse-pull task
